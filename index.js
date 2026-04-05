@@ -72,22 +72,52 @@ function parsePositions(content) {
   return positions;
 }
 
+// can = 我可以打；need = 找人來打
+function parsePostType(content) {
+  const lower = content.toLowerCase();
+  if (/\b(need|lf\b|lfg|looking for|want|seeking|3\/4|2\/4|1\/4)\b/.test(lower)) return 'need';
+  if (/\b(can|i can|able|doing|i do|i go|offer)\b/.test(lower)) return 'can';
+  return 'can'; // default
+}
+
 function parseIGN(content, displayName) {
   const ignMatch = content.match(/ign\s*:?\s*(\S+)/i);
   if (ignMatch) return ignMatch[1];
-  const iamMatch = content.match(/i(?:'m| am)\s+(\w+)/i);
-  if (iamMatch) return iamMatch[1];
-  return displayName;
+  return null; // 沒有 IGN 就回傳 null
 }
 
 function isLFG(content) {
-  return /\b(lfg|lf\b|lf\+|looking for)/i.test(content);
+  return /\b(lfg|lf\b|lf\+|looking for|can p[1-4]|need p[1-4])\b/i.test(content);
+}
+
+// 檢查是否有有意義的內容（有 P1-P4 或 boss 名稱或 IGN）
+function hasMeaningfulContent(content, bossName) {
+  if (bossName) return true;
+  if (/p\s*[1-4]/i.test(content)) return true;
+  if (/ign\s*:?\s*\S+/i.test(content)) return true;
+  return false;
 }
 
 async function getStratName(teamId) {
   if (!teamId) return null;
   const { data } = await supabase.from('teams').select('name').eq('id', teamId).maybeSingle();
   return data?.name || null;
+}
+
+// 10 分鐘內同一用戶同一頻道的 post 合併
+async function findRecentPost(playerId, channelId, serverId) {
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const { data } = await supabase.from('lfg_posts')
+    .select('id')
+    .eq('discord_server_id', serverId)
+    .eq('discord_channel_id', channelId)
+    .eq('discord_username', playerId)
+    .eq('is_stale', false)
+    .gte('posted_at', tenMinAgo)
+    .order('posted_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data?.id || null;
 }
 
 async function handleMessage(message) {
@@ -98,11 +128,12 @@ async function handleMessage(message) {
   const content = message.content.trim();
   if (!content) return;
 
-  // 優先用 server nickname，其次 globalName，最後 username
-  await message.member?.fetch().catch(()=>{});
+  await message.member?.fetch().catch(() => {});
   const displayName = message.member?.nickname
     || message.author.globalName
     || message.author.username;
+
+  const avatarUrl = message.author.displayAvatarURL({ size: 64, extension: 'png' });
 
   let bossName = null;
   let teamId = null;
@@ -123,30 +154,48 @@ async function handleMessage(message) {
     if (!bossName) return;
   }
 
+  // 過濾沒有意義的訊息
+  if (!hasMeaningfulContent(content, bossName)) return;
+
   const positions = parsePositions(content);
   const ign = parseIGN(content, displayName);
+  const postType = parsePostType(content);
   const stratName = await getStratName(teamId);
   const jumpUrl = `https://discord.com/channels/${serverId}/${message.channelId}/${message.id}`;
   const serverName = message.guild?.name || serverId;
   const channelName = message.channel?.name || message.channelId;
 
-  console.log(`[LFG] ${displayName} | ${bossName} | ${stratName||'?'} | pos:${positions.join(',')} | ign:${ign}`);
+  console.log(`[LFG] ${displayName} | ${bossName} | ${stratName||'?'} | ${postType} | pos:${positions.join(',')} | ign:${ign||'none'}`);
 
-  const { error } = await supabase.from('lfg_posts').upsert({
-    discord_msg_id: message.id,
-    discord_server_id: serverId,
-    discord_channel_id: message.channelId,
-    discord_username: displayName,
-    ign, boss_name: bossName, team_id: teamId, strat_name: stratName,
-    positions, raw_message: content,
-    posted_at: new Date(message.createdTimestamp).toISOString(),
-    is_stale: false,
-    discord_jump_url: jumpUrl,
-    server_name: serverName,
-    channel_name: channelName,
-  }, { onConflict: 'discord_msg_id' });
+  // 10 分鐘內同一用戶合併 post
+  const existingId = await findRecentPost(displayName, message.channelId, serverId);
 
-  if (error) console.error('Supabase error:', error.message);
+  if (existingId) {
+    await supabase.from('lfg_posts').update({
+      raw_message: content,
+      positions: positions.length > 0 ? positions : undefined,
+      ign: ign || undefined,
+      post_type: postType,
+      discord_jump_url: jumpUrl,
+      posted_at: new Date(message.createdTimestamp).toISOString(),
+      is_stale: false,
+    }).eq('id', existingId);
+  } else {
+    await supabase.from('lfg_posts').upsert({
+      discord_msg_id: message.id,
+      discord_server_id: serverId,
+      discord_channel_id: message.channelId,
+      discord_username: displayName,
+      avatar_url: avatarUrl,
+      ign, boss_name: bossName, team_id: teamId, strat_name: stratName,
+      positions, raw_message: content, post_type: postType,
+      posted_at: new Date(message.createdTimestamp).toISOString(),
+      is_stale: false,
+      discord_jump_url: jumpUrl,
+      server_name: serverName,
+      channel_name: channelName,
+    }, { onConflict: 'discord_msg_id' });
+  }
 }
 
 async function markStale() {

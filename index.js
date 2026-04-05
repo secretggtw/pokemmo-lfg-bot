@@ -6,6 +6,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -14,151 +15,150 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// ===== Boss 名稱對應 =====
 const BOSS_ALIASES = {
-  heatran:   'Heatran',
-  cresselia: 'Cresselia',
-  meloetta:  'Meloetta',
-  cobalion:  'Cobalion',
-  terrakion: 'Terrakion',
-  virizion:  'Virizion',
+  heatran:'Heatran',cresselia:'Cresselia',meloetta:'Meloetta',
+  cobalion:'Cobalion',terrakion:'Terrakion',virizion:'Virizion',
+  octi:'Heatran',octilleri:'Heatran',octillery:'Heatran',
+  kyurem:'Kyurem',reshiram:'Reshiram',zekrom:'Zekrom',
+  landorus:'Landorus',thundurus:'Thundurus',tornadus:'Tornadus',
 };
 
-// ===== Server 設定 =====
-// SERVER_CONFIGS: { serverId: { type: 'split' | 'single', channelIds: [...] } }
 const SERVER_CONFIGS = {
-  [process.env.SERVER_A_ID]: {
-    type: 'split',       // 每個 boss 有獨立頻道
-    // channelIds 為空代表監聽所有 lf- 開頭的頻道
-  },
+  [process.env.SERVER_A_ID]: { type: 'split' },
   [process.env.SERVER_B_ID]: {
-    type: 'single',      // 所有 LFG 在同一頻道
+    type: 'single',
     channelIds: (process.env.SERVER_B_CHANNEL_IDS || '').split(',').filter(Boolean),
   },
 };
 
-// ===== 從頻道名稱判斷 Boss =====
-function bossByChannelName(channelName) {
-  const name = channelName.toLowerCase();
-  for (const [alias, boss] of Object.entries(BOSS_ALIASES)) {
-    if (name.includes(alias)) return boss;
+let keywordsCache = [];
+let keywordsCacheTime = 0;
+
+async function getKeywords() {
+  if (Date.now() - keywordsCacheTime < 5 * 60 * 1000) return keywordsCache;
+  const { data } = await supabase.from('lfg_keywords').select('*');
+  keywordsCache = data || [];
+  keywordsCacheTime = Date.now();
+  return keywordsCache;
+}
+
+async function matchByKeywords(content) {
+  const lower = content.toLowerCase();
+  const keywords = await getKeywords();
+  for (const kw of keywords) {
+    if (lower.includes(kw.keyword.toLowerCase())) {
+      return { bossName: kw.boss_name, teamId: kw.team_id };
+    }
   }
   return null;
 }
 
-// ===== 從訊息內容解析 Boss =====
-function bossByContent(content) {
-  const lower = content.toLowerCase();
+function bossByText(text) {
+  const lower = text.toLowerCase();
   for (const [alias, boss] of Object.entries(BOSS_ALIASES)) {
     if (lower.includes(alias)) return boss;
   }
   return null;
 }
 
-// ===== 解析 Position =====
 function parsePositions(content) {
   const lower = content.toLowerCase();
+  if (/every\s*pos|all\s*pos|any\s*pos/i.test(lower)) return ['P1','P2','P3','P4'];
   const positions = [];
-
-  // "every position" / "all position" / "any position"
-  if (/every\s*pos|all\s*pos|any\s*pos/i.test(lower)) {
-    return ['P1', 'P2', 'P3', 'P4'];
-  }
-
-  // P1, P2, P3, P4 (大小寫, 含 "p 1" 格式)
-  const matches = lower.matchAll(/p\s*([1-4])/g);
-  for (const m of matches) {
+  for (const m of lower.matchAll(/p\s*([1-4])/g)) {
     const p = `P${m[1]}`;
     if (!positions.includes(p)) positions.push(p);
   }
-
   return positions;
 }
 
-// ===== 解析 IGN =====
-function parseIGN(content, username) {
-  // ign: xxx 或 ign xxx
+function parseIGN(content, displayName) {
   const ignMatch = content.match(/ign\s*:?\s*(\S+)/i);
   if (ignMatch) return ignMatch[1];
-
-  // 找 "i am xxx" / "i'm xxx"
   const iamMatch = content.match(/i(?:'m| am)\s+(\w+)/i);
   if (iamMatch) return iamMatch[1];
-
-  return username; // fallback: Discord username
+  return displayName;
 }
 
-// ===== 判斷是否為 LFG 訊息 =====
 function isLFG(content) {
-  return /\b(lfg|lf\b|lf\+|looking for|lf[g]?\s)/i.test(content);
+  return /\b(lfg|lf\b|lf\+|looking for)/i.test(content);
 }
 
-// ===== 主要處理邏輯 =====
+async function getStratName(teamId) {
+  if (!teamId) return null;
+  const { data } = await supabase.from('teams').select('name').eq('id', teamId).maybeSingle();
+  return data?.name || null;
+}
+
 async function handleMessage(message) {
   if (message.author.bot) return;
-
   const serverId = message.guildId;
   const config = SERVER_CONFIGS[serverId];
-  if (!config) return; // 不在監聽的 server
-
+  if (!config) return;
   const content = message.content.trim();
   if (!content) return;
 
+  // 優先用 server nickname，其次 globalName，最後 username
+  await message.member?.fetch().catch(()=>{});
+  const displayName = message.member?.nickname
+    || message.author.globalName
+    || message.author.username;
+
   let bossName = null;
+  let teamId = null;
 
   if (config.type === 'split') {
-    // 分開頻道：從頻道名判斷 Boss，且頻道名要有 lf-
-    const channelName = message.channel.name || '';
-    if (!channelName.startsWith('lf-') && !channelName.includes('-team')) return;
-    bossName = bossByChannelName(channelName);
-    if (!bossName) return; // 不認識的頻道直接跳過
-    // 不需要 isLFG 檢查，進頻道就算
+    const chName = message.channel.name || '';
+    if (!chName.startsWith('lf-') && !chName.includes('-team')) return;
+    const kwMatch = await matchByKeywords(content);
+    if (kwMatch) { bossName = kwMatch.bossName; teamId = kwMatch.teamId; }
+    else bossName = bossByText(chName);
+    if (!bossName) return;
   } else {
-    // 單一頻道：要在指定頻道，且訊息要像 LFG
     if (config.channelIds.length > 0 && !config.channelIds.includes(message.channelId)) return;
     if (!isLFG(content)) return;
-    bossName = bossByContent(content);
+    const kwMatch = await matchByKeywords(content);
+    if (kwMatch) { bossName = kwMatch.bossName; teamId = kwMatch.teamId; }
+    else bossName = bossByText(content);
     if (!bossName) return;
   }
 
   const positions = parsePositions(content);
-  const ign = parseIGN(content, message.author.username);
+  const ign = parseIGN(content, displayName);
+  const stratName = await getStratName(teamId);
+  const jumpUrl = `https://discord.com/channels/${serverId}/${message.channelId}/${message.id}`;
+  const serverName = message.guild?.name || serverId;
+  const channelName = message.channel?.name || message.channelId;
 
-  console.log(`[LFG] ${message.author.username} | ${bossName} | pos: ${positions.join(',')} | ign: ${ign}`);
+  console.log(`[LFG] ${displayName} | ${bossName} | ${stratName||'?'} | pos:${positions.join(',')} | ign:${ign}`);
 
   const { error } = await supabase.from('lfg_posts').upsert({
-    discord_msg_id:     message.id,
-    discord_server_id:  serverId,
+    discord_msg_id: message.id,
+    discord_server_id: serverId,
     discord_channel_id: message.channelId,
-    discord_username:   message.author.username,
-    ign,
-    boss_name:          bossName,
-    positions,
-    raw_message:        content,
-    posted_at:          new Date(message.createdTimestamp).toISOString(),
-    is_stale:           false,
+    discord_username: displayName,
+    ign, boss_name: bossName, team_id: teamId, strat_name: stratName,
+    positions, raw_message: content,
+    posted_at: new Date(message.createdTimestamp).toISOString(),
+    is_stale: false,
+    discord_jump_url: jumpUrl,
+    server_name: serverName,
+    channel_name: channelName,
   }, { onConflict: 'discord_msg_id' });
 
   if (error) console.error('Supabase error:', error.message);
 }
 
-// ===== 定時把 2 小時以上的設為 stale =====
 async function markStale() {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  await supabase
-    .from('lfg_posts')
-    .update({ is_stale: true })
-    .eq('is_stale', false)
-    .lt('posted_at', twoHoursAgo);
+  await supabase.from('lfg_posts').update({ is_stale: true })
+    .eq('is_stale', false).lt('posted_at', twoHoursAgo);
 }
 
-// ===== Bot 事件 =====
 client.once('ready', () => {
   console.log(`Bot ready: ${client.user.tag}`);
-  // 每10分鐘跑一次 stale 檢查
   setInterval(markStale, 10 * 60 * 1000);
 });
 
 client.on('messageCreate', handleMessage);
-
 client.login(process.env.DISCORD_TOKEN);

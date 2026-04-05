@@ -197,8 +197,13 @@ async function handleMessage(message) {
 
 async function markStale() {
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  // 2 小時後變暗
   await supabase.from('lfg_posts').update({ is_stale: true })
     .eq('is_stale', false).lt('posted_at', twoHoursAgo);
+  // 7 天後刪除
+  await supabase.from('lfg_posts').delete()
+    .lt('posted_at', sevenDaysAgo);
 }
 
 client.once('ready', () => {

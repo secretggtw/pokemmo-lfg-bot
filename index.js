@@ -22,15 +22,6 @@ const BOSS_ALIASES = {
   cobalion:  'Cobalion',
   terrakion: 'Terrakion',
   virizion:  'Virizion',
-  octi:      'Octillery',
-  octilleri: 'Octillery',
-  octillery: 'Octillery',
-  kyurem:    'Kyurem',
-  reshiram:  'Reshiram',
-  zekrom:    'Zekrom',
-  landorus:  'Landorus',
-  thundurus: 'Thundurus',
-  tornadus:  'Tornadus',
 };
 
 // ===== Server 設定 =====

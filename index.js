@@ -130,7 +130,7 @@ function getBossEmoji(raidName) {
 }
 
 async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null) {
-  const hostLine = creatorName ? `Host: **${creatorName}**\n` : '';
+  const hostLine = creatorName ? `👑 **${creatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
 
   // fetch guide URL from teams table if teamId provided
@@ -170,7 +170,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`**${teamName}**\n` + hostLine + posLines + linkLine)
+    .setDescription(`⚔️ ${teamName}\n` + hostLine + posLines + linkLine)
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -352,7 +352,7 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`**${teamName}**\n` + posLines + '\n' + linkParts2.join(' · ') + infoLine)
+    .setDescription(`⚔️ ${teamName}\n` + posLines + '\n' + linkParts2.join(' · ') + infoLine)
     .setTimestamp();
 
   // row1: Join P1 Join P2 Join P3 Join P4 + Leave
@@ -889,7 +889,7 @@ client.on('interactionCreate', async interaction => {
   const discordUsername = interaction.user.username;
 
   // ── board:P1~P4 — join/leave via strat board (silent) ────────────────────
-  if (action === 'board') {
+  if (action === 'board' && value !== 'leave') {
     const position = value;
     const teamId = parseInt(sidOverride);
 

@@ -114,27 +114,48 @@ function parseIGN(content, displayName) {
 }
 
 // ─── build strat embed + buttons ───────────────────────────────────────────
+// boss emoji map (server custom emojis)
+const BOSS_EMOJI = {
+  heatran:  '<:heatran:1491844397149458578>',
+  cresselia:'<:cresselia:1491844457346105557>',
+  meloetta: '<:meloetta:1491844482931626145>',
+  terrakion:'<:terrakion:1491844684249567284>',
+  virizion: '<:virizon:1491844654839365775>',
+  cobalion: '<:cobalion:1491844524933255290>',
+};
+
+function getBossEmoji(raidName) {
+  const key = raidName.toLowerCase();
+  return BOSS_EMOJI[key] || '';
+}
+
 async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
-  const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
-  const playerListUrl = raidName && teamId
-    ? `${baseUrl}/?boss=${encodeURIComponent(raidName)}&team=${teamId}`
-    : baseUrl;
+  const hostLine = creatorName ? `Host: **${creatorName}**\n` : '';
+  const bossEmoji = getBossEmoji(raidName);
+
+  // fetch guide URL from teams table if teamId provided
+  let guideUrl = null;
+  if (teamId) {
+    const { data: teamData } = await supabase
+      .from('teams').select('guide_url').eq('id', teamId).single();
+    guideUrl = teamData?.guide_url || null;
+  }
+
+  const posLines = POSITIONS.map(pos => {
+    const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+    if (posSignups.length > 0) {
+      return posSignups.map(s => `**${pos}** | ${s.game_id} ✅`).join('\n');
+    }
+    return `**${pos}** | Open`;
+  }).join('\n');
+
+  const guideText = guideUrl ? `\n[Guide](${guideUrl})` : '';
+  const description = hostLine + posLines + guideText;
 
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ ${raidName} — ${teamName}`)
+    .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
-    .setDescription(
-      hostLine +
-      POSITIONS.map(pos => {
-        const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
-        if (posSignups.length > 0) {
-          return posSignups.map(s => `**${pos}** | ${s.game_id} ✅`).join('\n');
-        }
-        return `**${pos}** | Open`;
-      }).join('\n')
-    )
-    .setFooter({ text: `Run /id to link your game ID · Click /invite buttons to get the invite command · Player list: ${playerListUrl}` })
+    .setDescription(description)
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -277,6 +298,13 @@ async function buildMyPositionMessage(gameId, page = 0) {
 async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
   const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
   const playerListUrl = `${baseUrl}/?boss=${encodeURIComponent(raidNameForUrl)}&team=${teamId}`;
+  const bossEmoji = getBossEmoji(raidName);
+
+  // fetch guide URL
+  let guideUrl = null;
+  const { data: teamData } = await supabase
+    .from('teams').select('guide_url').eq('id', teamId).single();
+  guideUrl = teamData?.guide_url || null;
 
   // fetch player counts per position
   const { data: players } = await supabase
@@ -291,17 +319,19 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     counts[pos] = { total: posPlayers.length, online: posPlayers.filter(p => p.online).length };
   }
 
-  const desc = POSITIONS.map(pos => {
+  const posLines = POSITIONS.map(pos => {
     const { total, online } = counts[pos];
     const onlineStr = online > 0 ? `🟢 ${online} online` : `⚪ 0 online`;
     return `**${pos}** | ${onlineStr} / ${total} total`;
   }).join('\n');
 
+  const guideText = guideUrl ? `\n[Guide](${guideUrl})` : '';
+  const playerListText = `\n[Player List](${playerListUrl})`;
+
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ ${raidName} — ${teamName}`)
+    .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
-    .setDescription(desc)
-    .setFooter({ text: `Run /id to link your game ID · Player list: ${playerListUrl}` })
+    .setDescription(posLines + guideText + playerListText)
     .setTimestamp();
 
   // row1: P1 P2 P3 P4 + Leave

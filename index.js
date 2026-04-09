@@ -130,7 +130,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
         return `**${pos}** | Open`;
       }).join('\n')
     )
-    .setFooter({ text: 'Click a button to sign up · Run /id to link your game account' })
+    .setFooter({ text: 'Run /id to link your game ID · Use /invite buttons to copy invite commands' })
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -565,7 +565,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     const cmds = posSignups.map(s => `/invite ${s.game_id}`).join('\n');
-    await interaction.reply({ content: cmds, ephemeral: true });
+    await interaction.reply({ content: `\`\`\`\n${cmds}\n\`\`\``, ephemeral: true });
     return;
   }
 

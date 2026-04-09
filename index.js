@@ -113,11 +113,15 @@ function parseIGN(content, displayName) {
 }
 
 // ─── build strat embed + buttons ───────────────────────────────────────────
-async function buildStratMessage(raidName, teamName, signups = {}) {
+// creatorName: display name of post creator (shown with crown in embed)
+// stratPostId: needed for kick/delete customIds in row3
+async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null) {
+  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
   const embed = new EmbedBuilder()
     .setTitle(`📋 ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
     .setDescription(
+      hostLine +
       POSITIONS.map(pos => {
         const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
         if (posSignups.length > 0) {
@@ -129,7 +133,7 @@ async function buildStratMessage(raidName, teamName, signups = {}) {
     .setFooter({ text: 'Click a button to sign up · Run /id to link your game account' })
     .setTimestamp();
 
-  // row1: Join P1~P4 + Host Options
+  // row1: Join P1~P4 + Leave
   const row1 = new ActionRowBuilder().addComponents(
     ...POSITIONS.map(pos =>
       new ButtonBuilder()
@@ -138,12 +142,41 @@ async function buildStratMessage(raidName, teamName, signups = {}) {
         .setStyle(ButtonStyle.Primary)
     ),
     new ButtonBuilder()
+      .setCustomId('signup:cancel')
+      .setLabel('Leave')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  // row2: /invite P1~P4 (copies command) + Host Options
+  const row2 = new ActionRowBuilder().addComponents(
+    ...POSITIONS.map(pos =>
+      new ButtonBuilder()
+        .setCustomId(`invite:${pos}`)
+        .setLabel(`/invite ${pos}`)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+    new ButtonBuilder()
       .setCustomId('host:options')
       .setLabel('Host Options')
       .setStyle(ButtonStyle.Secondary)
   );
 
-  return { embeds: [embed], components: [row1] };
+  const components = [row1, row2];
+
+  // row3: Kick + Delete (only added when host options are expanded)
+  if (stratPostId) {
+    const sid = stratPostId;
+    const row3 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`kick:P1:${sid}`).setLabel('Kick P1').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P2:${sid}`).setLabel('Kick P2').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P3:${sid}`).setLabel('Kick P3').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P4:${sid}`).setLabel('Kick P4').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`host:delete:${sid}`).setLabel('Delete Post').setStyle(ButtonStyle.Danger),
+    );
+    components.push(row3);
+  }
+
+  return { embeds: [embed], components };
 }
 
 // 從 DB 讀取當前 strat_post 的報名狀態（每個 position 可多人）
@@ -348,28 +381,35 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.deferReply();
 
-    const msgPayload = await buildStratMessage(raid.name, team.name, {});
-    const msg = await interaction.followUp(msgPayload);
+    const creatorName = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
-    // 存入 strat_posts
+    // insert strat_posts first to get the id for row3 buttons
     const { data: stratPost, error } = await supabase
       .from('strat_posts')
       .insert({
-        message_id: msg.id,
+        message_id: '0', // placeholder, updated after message sent
         channel_id: interaction.channelId,
         guild_id: interaction.guildId,
         raid_id: raidId,
         team_id: teamId,
         created_by_discord_id: interaction.user.id,
+        creator_name: creatorName,
       })
       .select()
       .single();
 
-    if (error) {
-      console.error('[Bot] strat_posts insert error:', error.message);
-    } else {
-      console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
+    if (error || !stratPost) {
+      console.error('[Bot] strat_posts insert error:', error?.message);
+      await interaction.followUp({ content: '❌ Failed to create post.', ephemeral: true });
+      return;
     }
+
+    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id);
+    const msg = await interaction.followUp(msgPayload);
+
+    // update message_id now that we have it
+    await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
+    console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
     return;
   }
 
@@ -480,14 +520,14 @@ client.on('interactionCreate', async interaction => {
   if (sidOverride) {
     const { data } = await supabase
       .from('strat_posts')
-      .select('*, raids(name, icon), teams(name)')
+      .select('*, raids(name, icon), teams(name), creator_name')
       .eq('id', parseInt(sidOverride))
       .single();
     stratPost = data;
   } else {
     const { data } = await supabase
       .from('strat_posts')
-      .select('*, raids(name, icon), teams(name)')
+      .select('*, raids(name, icon), teams(name), creator_name')
       .eq('message_id', interaction.message.id)
       .single();
     stratPost = data;
@@ -505,31 +545,27 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '❌ Only the post creator can use Host Options.', ephemeral: true });
       return;
     }
-    // edit the original post to add kick/delete row below join row
+    // rebuild message with row3 (kick/delete) visible
     const signups = await getSignupsForPost(stratPost.id);
-    const row1 = new ActionRowBuilder().addComponents(
-      ...POSITIONS.map(pos =>
-        new ButtonBuilder()
-          .setCustomId(`signup:${pos}`)
-          .setLabel(`Join ${pos}`)
-          .setStyle(ButtonStyle.Primary)
-      ),
-      new ButtonBuilder()
-        .setCustomId('host:options')
-        .setLabel('Host Options')
-        .setStyle(ButtonStyle.Secondary)
-    );
-    // encode stratPost.id into customId so kick works from any context
-    const sid = stratPost.id;
-    const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`kick:P1:${sid}`).setLabel('Kick P1').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`kick:P2:${sid}`).setLabel('Kick P2').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`kick:P3:${sid}`).setLabel('Kick P3').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`kick:P4:${sid}`).setLabel('Kick P4').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`host:delete:${sid}`).setLabel('Delete Post').setStyle(ButtonStyle.Danger),
-    );
-    const embed = interaction.message.embeds[0];
-    await interaction.update({ embeds: [embed], components: [row1, row2] });
+    const { raidsCache: rc2, teamsCache: tc2 } = await getRaidConfig();
+    const raidObj = rc2.find(r => r.id === stratPost.raid_id);
+    const creatorName = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+    const updated = await buildStratMessage(raidName, teamName, signups, creatorName, stratPost.id);
+    await interaction.update(updated);
+    return;
+  }
+
+  // ── invite:P1~P4 — reply ephemeral with /invite command to copy ───────────
+  if (action === 'invite') {
+    const invPos = value;
+    const signups = await getSignupsForPost(stratPost.id);
+    const posSignups = Array.isArray(signups[invPos]) ? signups[invPos] : (signups[invPos] ? [signups[invPos]] : []);
+    if (posSignups.length === 0) {
+      await interaction.reply({ content: `**${invPos}** has no players to invite.`, ephemeral: true });
+      return;
+    }
+    const cmds = posSignups.map(s => `/invite ${s.game_id}`).join('\n');
+    await interaction.reply({ content: `**${invPos} invite command(s):**\n\`\`\`\n${cmds}\n\`\`\``, ephemeral: true });
     return;
   }
 
@@ -584,7 +620,7 @@ client.on('interactionCreate', async interaction => {
 
     // fetch and update the original strat post message
     const signups = await getSignupsForPost(stratPost.id);
-    const updatedMsg = await buildStratMessage(raidName, teamName, signups);
+    const updatedMsg = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
     // add back the host options row since creator is using it
     const sid = stratPost.id;
     const row2 = new ActionRowBuilder().addComponents(
@@ -653,7 +689,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
     await interaction.update(updated);
     await interaction.followUp({ content: '✅ All your signups cancelled.', ephemeral: true });
     return;
@@ -683,7 +719,7 @@ client.on('interactionCreate', async interaction => {
         .eq('player_name', binding.game_id);
     }
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
     await interaction.update(updated);
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, ephemeral: true });
     return;
@@ -735,7 +771,7 @@ client.on('interactionCreate', async interaction => {
   }
 
   const signups = await getSignupsForPost(stratPost.id);
-  const updated = await buildStratMessage(raidName, teamName, signups);
+  const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
   await interaction.update(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, ephemeral: true });
 });

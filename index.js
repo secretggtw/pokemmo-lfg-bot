@@ -565,7 +565,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     const cmds = posSignups.map(s => `/invite ${s.game_id}`).join('\n');
-    await interaction.reply({ content: `**${invPos} invite command(s):**\n\`\`\`\n${cmds}\n\`\`\``, ephemeral: true });
+    await interaction.reply({ content: cmds, ephemeral: true });
     return;
   }
 

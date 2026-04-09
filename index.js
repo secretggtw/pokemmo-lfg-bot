@@ -264,7 +264,17 @@ async function registerCommands() {
             { name: 'P3', value: 'P3' },
             { name: 'P4', value: 'P4' },
           )
+      )
+      .addBooleanOption(opt =>
+        opt.setName('sync')
+          .setDescription('Sync to the website player list? (default: yes)')
+          .setRequired(false)
       ),
+
+    // /mystatus — view and manage your current signups
+    new SlashCommandBuilder()
+      .setName('mystatus')
+      .setDescription('View and remove your current raid signups'),
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -453,18 +463,15 @@ client.on('interactionCreate', async interaction => {
 
   // ── /position ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'position') {
-    const raidId  = parseInt(interaction.options.getString('raid'));
-    const teamId  = parseInt(interaction.options.getString('team'));
+    const raidId   = parseInt(interaction.options.getString('raid'));
+    const teamId   = parseInt(interaction.options.getString('team'));
     const position = interaction.options.getString('position');
+    const syncToWeb = interaction.options.getBoolean('sync') ?? true;
     const discordId = interaction.user.id;
     const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
-    // check game ID binding
     const { data: binding } = await supabase
-      .from('user_bindings')
-      .select('game_id')
-      .eq('discord_id', discordId)
-      .single();
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
 
     if (!binding) {
       await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', ephemeral: true });
@@ -482,28 +489,81 @@ client.on('interactionCreate', async interaction => {
 
     const now = new Date().toISOString();
 
-    // upsert into players table — offline by default, shows last_seen
-    const { error } = await supabase.from('players').upsert({
-      boss_name: raid.name,
-      team_id: teamId,
-      position,
-      player_name: binding.game_id,
-      online: false,
-      last_seen: now,
-      joined_at: now,
-    }, { onConflict: 'boss_name,team_id,position,player_name' });
+    if (syncToWeb) {
+      const { error } = await supabase.from('players').upsert({
+        boss_name: raid.name,
+        team_id: teamId,
+        position,
+        player_name: binding.game_id,
+        online: false,
+        last_seen: now,
+        joined_at: now,
+      }, { onConflict: 'boss_name,team_id,position,player_name' });
 
-    if (error) {
-      await interaction.reply({ content: '❌ Failed to join position. Please try again.', ephemeral: true });
-      console.error('[Bot] /position error:', error.message);
+      if (error) {
+        await interaction.reply({ content: '❌ Failed to sync to website. Please try again.', ephemeral: true });
+        console.error('[Bot] /position sync error:', error.message);
+        return;
+      }
+    }
+
+    const syncNote = syncToWeb
+      ? '\nSynced to website (offline by default — go online on the website)'
+      : '\nNot synced to website';
+
+    await interaction.reply({
+      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}${syncNote}`,
+      ephemeral: true,
+    });
+    console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position} sync=${syncToWeb}`);
+    return;
+  }
+
+  // ── /mystatus ─────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'mystatus') {
+    const discordId = interaction.user.id;
+
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', ephemeral: true });
       return;
     }
 
+    // fetch all current player entries for this game_id
+    const { data: entries } = await supabase
+      .from('players')
+      .select('id, boss_name, team_id, position, online, last_seen')
+      .eq('player_name', binding.game_id)
+      .order('boss_name');
+
+    if (!entries || entries.length === 0) {
+      await interaction.reply({ content: `No active signups found for **${binding.game_id}**.`, ephemeral: true });
+      return;
+    }
+
+    // build display + remove buttons
+    const { raidsCache, teamsCache } = await getRaidConfig();
+    const lines = entries.map(e => {
+      const team = teamsCache.find(t => t.id === e.team_id);
+      return `• **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id} (${e.online ? '🟢 Online' : '⚪ Offline'})`;
+    }).join('\n');
+
+    // up to 5 remove buttons per row
+    const removeButtons = entries.slice(0, 5).map(e =>
+      new ButtonBuilder()
+        .setCustomId(`myremove:${e.id}`)
+        .setLabel(`Remove ${e.position} ${e.boss_name}`)
+        .setStyle(ButtonStyle.Danger)
+    );
+    const row = new ActionRowBuilder().addComponents(removeButtons);
+
     await interaction.reply({
-      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id} (offline by default — go online on the website)`,
+      content: `**Your current signups** (Game ID: ${binding.game_id}):\n${lines}\n\nClick a button to remove:`,
+      components: entries.length > 0 ? [row] : [],
       ephemeral: true,
     });
-    console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
     return;
   }
 
@@ -541,6 +601,36 @@ client.on('interactionCreate', async interaction => {
   const raidName = stratPost.raids?.name || 'Raid';
   const teamName = stratPost.teams?.name || 'Strat';
   const creatorId = stratPost.created_by_discord_id || null;
+
+  // ── myremove — remove own player entry from website list ─────────────────
+  if (action === 'myremove') {
+    const entryId = value;
+    const discordId2 = interaction.user.id;
+
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId2).single();
+
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.', ephemeral: true });
+      return;
+    }
+
+    const { data: entry } = await supabase
+      .from('players').select('id, boss_name, position, player_name')
+      .eq('id', entryId).eq('player_name', binding.game_id).single();
+
+    if (!entry) {
+      await interaction.reply({ content: '❌ Entry not found or does not belong to you.', ephemeral: true });
+      return;
+    }
+
+    await supabase.from('players').delete().eq('id', entryId);
+    await interaction.reply({
+      content: `✅ Removed **${entry.position}** from **${entry.boss_name}**.`,
+      ephemeral: true,
+    });
+    return;
+  }
 
   // ── host:options — ephemeral menu for host ────────────────────────────────
   if (action === 'host' && value === 'options') {

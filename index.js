@@ -467,16 +467,31 @@ client.on('interactionCreate', async interaction => {
   // ── buttons ───────────────────────────────────────────────────────────────
   if (!interaction.isButton()) return;
 
-  const [action, value] = interaction.customId.split(':');
+  const parts = interaction.customId.split(':');
+  const action = parts[0];
+  const value = parts[1];
+  const sidOverride = parts[2]; // strat_post id encoded in customId (for kick/delete)
+
   const discordId = interaction.user.id;
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
-  // find strat post
-  const { data: stratPost } = await supabase
-    .from('strat_posts')
-    .select('*, raids(name, icon), teams(name)')
-    .eq('message_id', interaction.message.id)
-    .single();
+  // find strat post — prefer sidOverride (kick/delete from row2), else lookup by message id
+  let stratPost;
+  if (sidOverride) {
+    const { data } = await supabase
+      .from('strat_posts')
+      .select('*, raids(name, icon), teams(name)')
+      .eq('id', parseInt(sidOverride))
+      .single();
+    stratPost = data;
+  } else {
+    const { data } = await supabase
+      .from('strat_posts')
+      .select('*, raids(name, icon), teams(name)')
+      .eq('message_id', interaction.message.id)
+      .single();
+    stratPost = data;
+  }
 
   if (!stratPost) return;
 
@@ -490,19 +505,31 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '❌ Only the post creator can use Host Options.', ephemeral: true });
       return;
     }
-    // show kick buttons + delete — ephemeral only visible to creator
-    const kickRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('kick:P1').setLabel('Kick P1').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('kick:P2').setLabel('Kick P2').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('kick:P3').setLabel('Kick P3').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('kick:P4').setLabel('Kick P4').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('host:delete').setLabel('Delete Post').setStyle(ButtonStyle.Danger),
+    // edit the original post to add kick/delete row below join row
+    const signups = await getSignupsForPost(stratPost.id);
+    const row1 = new ActionRowBuilder().addComponents(
+      ...POSITIONS.map(pos =>
+        new ButtonBuilder()
+          .setCustomId(`signup:${pos}`)
+          .setLabel(`Join ${pos}`)
+          .setStyle(ButtonStyle.Primary)
+      ),
+      new ButtonBuilder()
+        .setCustomId('host:options')
+        .setLabel('Host Options')
+        .setStyle(ButtonStyle.Secondary)
     );
-    await interaction.reply({
-      content: '**Host Options** — select an action:',
-      components: [kickRow],
-      ephemeral: true,
-    });
+    // encode stratPost.id into customId so kick works from any context
+    const sid = stratPost.id;
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`kick:P1:${sid}`).setLabel('Kick P1').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P2:${sid}`).setLabel('Kick P2').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P3:${sid}`).setLabel('Kick P3').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P4:${sid}`).setLabel('Kick P4').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`host:delete:${sid}`).setLabel('Delete Post').setStyle(ButtonStyle.Danger),
+    );
+    const embed = interaction.message.embeds[0];
+    await interaction.update({ embeds: [embed], components: [row1, row2] });
     return;
   }
 
@@ -512,10 +539,10 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '❌ Only the post creator can delete this.', ephemeral: true });
       return;
     }
-    try { await interaction.message.delete(); } catch (e) {}
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
-    await interaction.update({ content: '✅ Post deleted.', components: [], embeds: [] });
+    try { await interaction.message.delete(); } catch (e) {}
+    await interaction.reply({ content: '✅ Post deleted.', ephemeral: true, flags: 64 });
     return;
   }
 
@@ -526,10 +553,9 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     const kickPos = value;
-    // get signups for this position
     const { data: kicked } = await supabase
       .from('discord_signups')
-      .select('game_id, player_name:game_id')
+      .select('game_id')
       .eq('strat_post_id', stratPost.id)
       .eq('position', kickPos);
 
@@ -538,7 +564,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // remove from discord_signups
     await supabase.from('discord_signups')
       .delete()
       .eq('strat_post_id', stratPost.id)
@@ -549,8 +574,7 @@ client.on('interactionCreate', async interaction => {
     const raid = raidsCache.find(r => r.id === stratPost.raid_id);
     if (raid) {
       for (const k of kicked) {
-        await supabase.from('players')
-          .delete()
+        await supabase.from('players').delete()
           .eq('boss_name', raid.name)
           .eq('team_id', stratPost.team_id)
           .eq('position', kickPos)
@@ -558,10 +582,28 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // update the original embed
+    // fetch and update the original strat post message
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups);
-    try { await interaction.message.edit(updated); } catch (e) {}
+    const updatedMsg = await buildStratMessage(raidName, teamName, signups);
+    // add back the host options row since creator is using it
+    const sid = stratPost.id;
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`kick:P1:${sid}`).setLabel('Kick P1').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P2:${sid}`).setLabel('Kick P2').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P3:${sid}`).setLabel('Kick P3').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`kick:P4:${sid}`).setLabel('Kick P4').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`host:delete:${sid}`).setLabel('Delete Post').setStyle(ButtonStyle.Danger),
+    );
+    updatedMsg.components.push(row2);
+
+    try {
+      const ch = await interaction.client.channels.fetch(stratPost.channel_id);
+      const msg = await ch.messages.fetch(stratPost.message_id);
+      await msg.edit(updatedMsg);
+    } catch (e) {
+      console.error('[Bot] kick edit error:', e.message);
+    }
+
     const names = kicked.map(k => k.game_id).join(', ');
     await interaction.reply({ content: `✅ Kicked **${kickPos}**: ${names}`, ephemeral: true });
     return;

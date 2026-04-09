@@ -347,18 +347,20 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
   linkParts2.push(`[Pokémon](${pokemonUrl})`);
   linkParts2.push(`[Player List](${playerListUrl})`);
 
+  const infoLine = '\n-# Join to add yourself to the player list · Online (30 min) shows you as available on the website';
+
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`**${teamName}**\n` + posLines + '\n' + linkParts2.join(' · '))
+    .setDescription(`**${teamName}**\n` + posLines + '\n' + linkParts2.join(' · ') + infoLine)
     .setTimestamp();
 
-  // row1: P1 P2 P3 P4 + Leave
+  // row1: Join P1 Join P2 Join P3 Join P4 + Leave
   const row1 = new ActionRowBuilder().addComponents(
     ...POSITIONS.map(pos =>
       new ButtonBuilder()
         .setCustomId(`board:${pos}:${teamId}`)
-        .setLabel(pos)
+        .setLabel(`Join ${pos}`)
         .setStyle(ButtonStyle.Primary)
     ),
     new ButtonBuilder()

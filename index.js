@@ -170,7 +170,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`⚔️ ${teamName}\n` + hostLine + posLines + linkLine)
+    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines + linkLine)
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -352,7 +352,7 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`⚔️ ${teamName}\n` + posLines + '\n' + linkParts2.join(' · ') + infoLine)
+    .setDescription(`### ⚔️ ${teamName}\n` + posLines + '\n' + linkParts2.join(' · ') + infoLine)
     .setTimestamp();
 
   // row1: Join P1 Join P2 Join P3 Join P4 + Leave
@@ -454,7 +454,7 @@ async function registerCommands() {
     // /raid — post a raid signup form
     new SlashCommandBuilder()
       .setName('raid')
-      .setDescription('Post a raid signup form')
+      .setDescription('Host a raid')
       .addStringOption(opt =>
         opt.setName('raid')
           .setDescription('Select a raid boss')
@@ -462,8 +462,8 @@ async function registerCommands() {
           .setAutocomplete(true)
       )
       .addStringOption(opt =>
-        opt.setName('team')
-          .setDescription('Select a team strategy')
+        opt.setName('strat')
+          .setDescription('Select a strat')
           .setRequired(true)
           .setAutocomplete(true)
       ),
@@ -489,8 +489,8 @@ async function registerCommands() {
           .setAutocomplete(true)
       )
       .addStringOption(opt =>
-        opt.setName('team')
-          .setDescription('Select a team strategy')
+        opt.setName('strat')
+          .setDescription('Select a strat')
           .setRequired(true)
           .setAutocomplete(true)
       )
@@ -522,8 +522,8 @@ async function registerCommands() {
           .setAutocomplete(true)
       )
       .addStringOption(opt =>
-        opt.setName('team')
-          .setDescription('Select a team strategy')
+        opt.setName('strat')
+          .setDescription('Select a strat')
           .setRequired(true)
           .setAutocomplete(true)
       ),
@@ -691,7 +691,7 @@ client.on('interactionCreate', async interaction => {
   // ── /strat ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'raid') {
     const raidId = parseInt(interaction.options.getString('raid'));
-    const teamId = parseInt(interaction.options.getString('team'));
+    const teamId = parseInt(interaction.options.getString('strat'));
 
     const { raidsCache, teamsCache } = await getRaidConfig();
     const raid = raidsCache.find(r => r.id === raidId);
@@ -774,7 +774,7 @@ client.on('interactionCreate', async interaction => {
   // ── /position ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'position') {
     const raidId   = parseInt(interaction.options.getString('raid'));
-    const teamId   = parseInt(interaction.options.getString('team'));
+    const teamId   = parseInt(interaction.options.getString('strat'));
     const position = interaction.options.getString('position');
     const discordId = interaction.user.id;
     const discordUsername = interaction.user.username;
@@ -845,7 +845,7 @@ client.on('interactionCreate', async interaction => {
   // ── /strat — create permanent strat board ────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'strat') {
     const raidId = parseInt(interaction.options.getString('raid'));
-    const teamId = parseInt(interaction.options.getString('team'));
+    const teamId = parseInt(interaction.options.getString('strat'));
 
     const { raidsCache, teamsCache } = await getRaidConfig();
     const raid = raidsCache.find(r => r.id === raidId);

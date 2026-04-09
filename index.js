@@ -247,6 +247,72 @@ async function buildMyPositionMessage(gameId) {
   };
 }
 
+// ─── build strat board embed + buttons ──────────────────────────────────────
+async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
+  const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
+  const playerListUrl = `${baseUrl}/?boss=${encodeURIComponent(raidNameForUrl)}&team=${teamId}`;
+
+  // fetch player counts per position
+  const { data: players } = await supabase
+    .from('players')
+    .select('position, online')
+    .eq('boss_name', raidName)
+    .eq('team_id', teamId);
+
+  const counts = {};
+  for (const pos of POSITIONS) {
+    const posPlayers = (players || []).filter(p => p.position === pos);
+    counts[pos] = { total: posPlayers.length, online: posPlayers.filter(p => p.online).length };
+  }
+
+  const desc = POSITIONS.map(pos => {
+    const { total, online } = counts[pos];
+    const onlineStr = online > 0 ? `🟢 ${online} online` : `⚪ 0 online`;
+    return `**${pos}** | ${onlineStr} / ${total} total`;
+  }).join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle(`⚔️ ${raidName} — ${teamName}`)
+    .setColor(0x5865f2)
+    .setDescription(desc)
+    .setFooter({ text: `Run /id to link your game ID · Player list: ${playerListUrl}` })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    ...POSITIONS.map(pos =>
+      new ButtonBuilder()
+        .setCustomId(`board:${pos}:${teamId}`)
+        .setLabel(`Join ${pos}`)
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+// refresh all strat boards for a given team after a player joins/leaves
+async function refreshStratBoards(teamId) {
+  const { data: boards } = await supabase
+    .from('strat_boards')
+    .select('*, raids(name), teams(name)')
+    .eq('team_id', teamId);
+
+  if (!boards || boards.length === 0) return;
+
+  for (const board of boards) {
+    try {
+      const raidName = board.raids?.name || '';
+      const teamName = board.teams?.name || '';
+      const msg = await buildStratBoard(raidName, teamName, teamId, raidName);
+      const ch = await client.channels.fetch(board.channel_id);
+      const discordMsg = await ch.messages.fetch(board.message_id);
+      await discordMsg.edit(msg);
+    } catch (e) {
+      console.error('[Bot] refreshStratBoards error:', e.message);
+    }
+  }
+}
+
 // ─── slash command registration ─────────────────────────────────────────────
 async function registerCommands() {
   const commands = [
@@ -319,6 +385,23 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('myposition')
       .setDescription('View and manage your current raid positions'),
+
+    // /strat — create a permanent strat board showing player counts
+    new SlashCommandBuilder()
+      .setName('strat')
+      .setDescription('Create a permanent strat board with player count stats')
+      .addStringOption(opt =>
+        opt.setName('raid')
+          .setDescription('Select a raid boss')
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('team')
+          .setDescription('Select a team strategy')
+          .setRequired(true)
+          .setAutocomplete(true)
+      ),
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -349,7 +432,7 @@ client.on('interactionCreate', async interaction => {
 
   const { raidsCache, teamsCache } = await getRaidConfig();
 
-  if (interaction.commandName === 'raid' || interaction.commandName === 'position') {
+  if (interaction.commandName === 'raid' || interaction.commandName === 'position' || interaction.commandName === 'strat') {
     const focused = interaction.options.getFocused(true);
 
     if (focused.name === 'raid') {
@@ -558,6 +641,8 @@ client.on('interactionCreate', async interaction => {
       flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
+    // refresh any strat boards for this team
+    refreshStratBoards(teamId).catch(e => console.error('[Bot] refresh error:', e.message));
     return;
   }
 
@@ -575,6 +660,41 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
+  // ── /strat — create permanent strat board ────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'strat') {
+    const raidId = parseInt(interaction.options.getString('raid'));
+    const teamId = parseInt(interaction.options.getString('team'));
+
+    const { raidsCache, teamsCache } = await getRaidConfig();
+    const raid = raidsCache.find(r => r.id === raidId);
+    const team = teamsCache.find(t => t.id === teamId);
+
+    if (!raid || !team) {
+      await interaction.reply({ content: '❌ Raid or strategy not found.', flags: 64 });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    const boardMsg = await buildStratBoard(raid.name, team.name, teamId, raid.name);
+    const msg = await interaction.followUp(boardMsg);
+
+    const { error } = await supabase.from('strat_boards').insert({
+      message_id: msg.id,
+      channel_id: interaction.channelId,
+      guild_id: interaction.guildId,
+      raid_id: raidId,
+      team_id: teamId,
+    });
+
+    if (error) {
+      console.error('[Bot] strat_boards insert error:', error.message);
+    } else {
+      console.log(`[Bot] Strat board created: ${raid.name} ${team.name}`);
+    }
+    return;
+  }
+
   // ── buttons ───────────────────────────────────────────────────────────────
   if (!interaction.isButton()) return;
 
@@ -585,6 +705,79 @@ client.on('interactionCreate', async interaction => {
 
   const discordId = interaction.user.id;
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+
+  // ── board:P1~P4 — join via strat board button ─────────────────────────────
+  if (action === 'board') {
+    const position = value;
+    const teamId = parseInt(sidOverride);
+
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
+      return;
+    }
+
+    // find board info for this team
+    const { data: board } = await supabase
+      .from('strat_boards')
+      .select('*, raids(name), teams(name)')
+      .eq('team_id', teamId)
+      .eq('message_id', interaction.message.id)
+      .single();
+
+    if (!board) {
+      await interaction.reply({ content: '❌ Board not found.', flags: 64 });
+      return;
+    }
+
+    const raidName = board.raids?.name || '';
+    const teamName = board.teams?.name || '';
+    const now = new Date().toISOString();
+
+    // check if already joined this position
+    const { data: existing } = await supabase
+      .from('players')
+      .select('id')
+      .eq('boss_name', raidName)
+      .eq('team_id', teamId)
+      .eq('position', position)
+      .eq('player_name', binding.game_id)
+      .maybeSingle();
+
+    if (existing) {
+      // toggle off
+      await supabase.from('players').delete().eq('id', existing.id);
+      await interaction.reply({ content: `✅ Removed from **${position}**.`, flags: 64 });
+    } else {
+      // join
+      const { error } = await supabase.from('players').upsert({
+        boss_name: raidName,
+        team_id: teamId,
+        position,
+        player_name: binding.game_id,
+        discord_username: discordUsername,
+        online: false,
+        last_seen: now,
+        joined_at: now,
+      }, { onConflict: 'boss_name,team_id,position,player_name' });
+
+      if (error) {
+        await interaction.reply({ content: '❌ Failed to join. Please try again.', flags: 64 });
+        return;
+      }
+
+      const playerListUrl = `https://pokemmo-raid-team-finder.vercel.app/?boss=${encodeURIComponent(raidName)}&team=${teamId}`;
+      await interaction.reply({
+        content: `✅ Joined **${position}** for **${raidName} — ${teamName}**!\nGame ID: ${binding.game_id}\nCheck the player list: ${playerListUrl}`,
+        flags: 64,
+      });
+    }
+
+    // refresh the board embed
+    await refreshStratBoards(teamId);
+    return;
+  }
 
   // ── my* handlers — don't need stratPost ───────────────────────────────────
   if (action === 'myremove' || action === 'mytoggle') {
@@ -882,6 +1075,9 @@ client.on('interactionCreate', async interaction => {
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
   await interaction.update(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
+
+  // refresh strat boards for this team
+  refreshStratBoards(stratPost.team_id).catch(e => console.error('[Bot] refresh error:', e.message));
 
   // DM the host when someone joins
   if (creatorId && creatorId !== discordId) {

@@ -288,7 +288,8 @@ async function registerCommands() {
     );
     console.log('[Bot] Slash commands registered');
   } catch (err) {
-    console.error('[Bot] Failed to register commands:', err.message);
+    console.error('[Bot] Failed to register commands:', err.message, err.stack);
+    throw err;
   }
 }
 
@@ -348,12 +349,12 @@ client.on('interactionCreate', async interaction => {
       if (!data) {
         await interaction.reply({
           content: '❌ No game ID linked.\nRun `/id <your_game_id>` to link one.',
-          ephemeral: true,
+          flags: 64,
         });
       } else {
         await interaction.reply({
           content: `✅ Linked game ID: **${data.game_id}**\nRun \`/id <new_id>\` to update.`,
-          ephemeral: true,
+          flags: 64,
         });
       }
       return;
@@ -368,11 +369,11 @@ client.on('interactionCreate', async interaction => {
     }, { onConflict: 'discord_id' });
 
     if (error) {
-      await interaction.reply({ content: '❌ Failed to link game ID. Please try again.', ephemeral: true });
+      await interaction.reply({ content: '❌ Failed to link game ID. Please try again.', flags: 64 });
     } else {
       await interaction.reply({
         content: `✅ Linked! Game ID: **${gameId}**\nYou can now click buttons on raid posts to sign up.`,
-        ephemeral: true,
+        flags: 64,
       });
     }
     return;
@@ -388,7 +389,7 @@ client.on('interactionCreate', async interaction => {
     const team = teamsCache.find(t => t.id === teamId);
 
     if (!raid || !team) {
-      await interaction.reply({ content: '❌ Raid or strategy not found.', ephemeral: true });
+      await interaction.reply({ content: '❌ Raid or strategy not found.', flags: 64 });
       return;
     }
 
@@ -413,7 +414,7 @@ client.on('interactionCreate', async interaction => {
 
     if (error || !stratPost) {
       console.error('[Bot] strat_posts insert error:', error?.message);
-      await interaction.followUp({ content: '❌ Failed to create post.', ephemeral: true });
+      await interaction.followUp({ content: '❌ Failed to create post.', flags: 64 });
       return;
     }
 
@@ -439,7 +440,7 @@ client.on('interactionCreate', async interaction => {
       .single();
 
     if (!stratPost) {
-      await interaction.reply({ content: '❌ Raid post not found.', ephemeral: true });
+      await interaction.reply({ content: '❌ Raid post not found.', flags: 64 });
       return;
     }
 
@@ -457,7 +458,7 @@ client.on('interactionCreate', async interaction => {
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
 
-    await interaction.reply({ content: '✅ Raid post deleted.', ephemeral: true });
+    await interaction.reply({ content: '✅ Raid post deleted.', flags: 64 });
     return;
   }
 
@@ -474,7 +475,7 @@ client.on('interactionCreate', async interaction => {
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
 
     if (!binding) {
-      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', ephemeral: true });
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
       return;
     }
 
@@ -483,7 +484,7 @@ client.on('interactionCreate', async interaction => {
     const team = teamsCache.find(t => t.id === teamId);
 
     if (!raid || !team) {
-      await interaction.reply({ content: '❌ Raid or strategy not found.', ephemeral: true });
+      await interaction.reply({ content: '❌ Raid or strategy not found.', flags: 64 });
       return;
     }
 
@@ -501,8 +502,8 @@ client.on('interactionCreate', async interaction => {
       }, { onConflict: 'boss_name,team_id,position,player_name' });
 
       if (error) {
-        await interaction.reply({ content: '❌ Failed to sync to website. Please try again.', ephemeral: true });
-        console.error('[Bot] /position sync error:', error.message);
+        await interaction.reply({ content: '❌ Failed to sync to website. Please try again.', flags: 64 });
+        console.error('[Bot] /position sync error:', error.message, error.details, error.hint);
         return;
       }
     }
@@ -513,7 +514,7 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.reply({
       content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}${syncNote}`,
-      ephemeral: true,
+      flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position} sync=${syncToWeb}`);
     return;
@@ -527,7 +528,7 @@ client.on('interactionCreate', async interaction => {
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
 
     if (!binding) {
-      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', ephemeral: true });
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
       return;
     }
 
@@ -539,7 +540,7 @@ client.on('interactionCreate', async interaction => {
       .order('boss_name');
 
     if (!entries || entries.length === 0) {
-      await interaction.reply({ content: `No active signups found for **${binding.game_id}**.`, ephemeral: true });
+      await interaction.reply({ content: `No active signups found for **${binding.game_id}**.`, flags: 64 });
       return;
     }
 
@@ -562,7 +563,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({
       content: `**Your current signups** (Game ID: ${binding.game_id}):\n${lines}\n\nClick a button to remove:`,
       components: entries.length > 0 ? [row] : [],
-      ephemeral: true,
+      flags: 64,
     });
     return;
   }
@@ -611,7 +612,7 @@ client.on('interactionCreate', async interaction => {
       .from('user_bindings').select('game_id').eq('discord_id', discordId2).single();
 
     if (!binding) {
-      await interaction.reply({ content: '❌ No game ID linked.', ephemeral: true });
+      await interaction.reply({ content: '❌ No game ID linked.', flags: 64 });
       return;
     }
 
@@ -620,14 +621,14 @@ client.on('interactionCreate', async interaction => {
       .eq('id', entryId).eq('player_name', binding.game_id).single();
 
     if (!entry) {
-      await interaction.reply({ content: '❌ Entry not found or does not belong to you.', ephemeral: true });
+      await interaction.reply({ content: '❌ Entry not found or does not belong to you.', flags: 64 });
       return;
     }
 
     await supabase.from('players').delete().eq('id', entryId);
     await interaction.reply({
       content: `✅ Removed **${entry.position}** from **${entry.boss_name}**.`,
-      ephemeral: true,
+      flags: 64,
     });
     return;
   }
@@ -635,7 +636,7 @@ client.on('interactionCreate', async interaction => {
   // ── host:options — ephemeral menu for host ────────────────────────────────
   if (action === 'host' && value === 'options') {
     if (discordId !== creatorId) {
-      await interaction.reply({ content: '❌ Only the post creator can use Host Options.', ephemeral: true });
+      await interaction.reply({ content: '❌ Only the post creator can use Host Options.', flags: 64 });
       return;
     }
     // rebuild message with row3 (kick/delete) visible
@@ -654,31 +655,31 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const posSignups = Array.isArray(signups[invPos]) ? signups[invPos] : (signups[invPos] ? [signups[invPos]] : []);
     if (posSignups.length === 0) {
-      await interaction.reply({ content: `**${invPos}** has no players to invite.`, ephemeral: true });
+      await interaction.reply({ content: `**${invPos}** has no players to invite.`, flags: 64 });
       return;
     }
     const cmds = posSignups.map(s => `/invite ${s.game_id}`).join('\n');
-    await interaction.reply({ content: `\`\`\`\n${cmds}\n\`\`\``, ephemeral: true });
+    await interaction.reply({ content: `\`\`\`\n${cmds}\n\`\`\``, flags: 64 });
     return;
   }
 
   // ── host:delete ───────────────────────────────────────────────────────────
   if (action === 'host' && value === 'delete') {
     if (discordId !== creatorId) {
-      await interaction.reply({ content: '❌ Only the post creator can delete this.', ephemeral: true });
+      await interaction.reply({ content: '❌ Only the post creator can delete this.', flags: 64 });
       return;
     }
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
     try { await interaction.message.delete(); } catch (e) {}
-    await interaction.reply({ content: '✅ Post deleted.', ephemeral: true, flags: 64 });
+    await interaction.reply({ content: '✅ Post deleted.', flags: 64, flags: 64 });
     return;
   }
 
   // ── kick:P1~P4 ────────────────────────────────────────────────────────────
   if (action === 'kick') {
     if (discordId !== creatorId) {
-      await interaction.reply({ content: '❌ Only the post creator can kick players.', ephemeral: true });
+      await interaction.reply({ content: '❌ Only the post creator can kick players.', flags: 64 });
       return;
     }
     const kickPos = value;
@@ -689,7 +690,7 @@ client.on('interactionCreate', async interaction => {
       .eq('position', kickPos);
 
     if (!kicked || kicked.length === 0) {
-      await interaction.reply({ content: `**${kickPos}** is already empty.`, ephemeral: true });
+      await interaction.reply({ content: `**${kickPos}** is already empty.`, flags: 64 });
       return;
     }
 
@@ -734,7 +735,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     const names = kicked.map(k => k.game_id).join(', ');
-    await interaction.reply({ content: `✅ Kicked **${kickPos}**: ${names}`, ephemeral: true });
+    await interaction.reply({ content: `✅ Kicked **${kickPos}**: ${names}`, flags: 64 });
     return;
   }
 
@@ -750,7 +751,7 @@ client.on('interactionCreate', async interaction => {
   if (!binding) {
     await interaction.reply({
       content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.',
-      ephemeral: true,
+      flags: 64,
     });
     return;
   }
@@ -784,7 +785,7 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
-    await interaction.followUp({ content: '✅ All your signups cancelled.', ephemeral: true });
+    await interaction.followUp({ content: '✅ All your signups cancelled.', flags: 64 });
     return;
   }
 
@@ -814,7 +815,7 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
-    await interaction.followUp({ content: `✅ Removed from **${position}**.`, ephemeral: true });
+    await interaction.followUp({ content: `✅ Removed from **${position}**.`, flags: 64 });
     return;
   }
 
@@ -829,7 +830,7 @@ client.on('interactionCreate', async interaction => {
     .eq('position', position);
 
   if (count >= maxPerPos) {
-    await interaction.reply({ content: `❌ **${position}** is full (${maxPerPos}/${maxPerPos}).`, ephemeral: true });
+    await interaction.reply({ content: `❌ **${position}** is full (${maxPerPos}/${maxPerPos}).`, flags: 64 });
     return;
   }
 
@@ -843,7 +844,7 @@ client.on('interactionCreate', async interaction => {
   });
 
   if (insertError) {
-    await interaction.reply({ content: '❌ Signup failed. Please try again.', ephemeral: true });
+    await interaction.reply({ content: '❌ Signup failed. Please try again.', flags: 64 });
     return;
   }
 
@@ -866,7 +867,7 @@ client.on('interactionCreate', async interaction => {
   const signups = await getSignupsForPost(stratPost.id);
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
   await interaction.update(updated);
-  await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, ephemeral: true });
+  await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
 
   // DM the host when someone joins
   if (creatorId && creatorId !== discordId) {

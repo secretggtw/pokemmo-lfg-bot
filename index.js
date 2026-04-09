@@ -1,6 +1,17 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
+// ─── clients ───────────────────────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -15,12 +26,21 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// ─── constants ─────────────────────────────────────────────────────────────
+const POSITIONS = ['P1', 'P2', 'P3', 'P4'];
+
+const POSITION_EMOJI = {
+  P1: '🟦',
+  P2: '🟩',
+  P3: '🟨',
+  P4: '🟥',
+};
+
+// LFG 訊息監聽用（保留原有功能）
 const BOSS_ALIASES = {
-  heatran:'Heatran', cresselia:'Cresselia', meloetta:'Meloetta',
-  cobalion:'Cobalion', terrakion:'Terrakion', virizion:'Virizion',
-  octi:'Heatran', octilleri:'Heatran', octillery:'Heatran',
-  kyurem:'Kyurem', reshiram:'Reshiram', zekrom:'Zekrom',
-  landorus:'Landorus', thundurus:'Thundurus', tornadus:'Tornadus',
+  heatran: 'Heatran', cresselia: 'Cresselia', meloetta: 'Meloetta',
+  cobalion: 'Cobalion', terrakion: 'Terrakion', virizion: 'Virizion',
+  octi: 'Heatran', octilleri: 'Heatran', octillery: 'Heatran',
 };
 
 const SERVER_CONFIGS = {
@@ -31,6 +51,7 @@ const SERVER_CONFIGS = {
   },
 };
 
+// ─── keyword cache ──────────────────────────────────────────────────────────
 let keywordsCache = [];
 let keywordsCacheTime = 0;
 
@@ -42,17 +63,22 @@ async function getKeywords() {
   return keywordsCache;
 }
 
-async function matchByKeywords(content) {
-  const lower = content.toLowerCase();
-  const keywords = await getKeywords();
-  for (const kw of keywords) {
-    if (lower.includes(kw.keyword.toLowerCase())) {
-      return { bossName: kw.boss_name, teamId: kw.team_id };
-    }
-  }
-  return null;
+// ─── raid / team cache ──────────────────────────────────────────────────────
+let raidsCache = [];
+let teamsCache = [];
+let configCacheTime = 0;
+
+async function getRaidConfig() {
+  if (Date.now() - configCacheTime < 60 * 1000) return { raidsCache, teamsCache };
+  const { data: raids } = await supabase.from('raids').select('*').order('sort_order');
+  const { data: teams } = await supabase.from('teams').select('*').order('id');
+  raidsCache = raids || [];
+  teamsCache = teams || [];
+  configCacheTime = Date.now();
+  return { raidsCache, teamsCache };
 }
 
+// ─── helpers ────────────────────────────────────────────────────────────────
 function bossByText(text) {
   const lower = text.toLowerCase();
   for (const [alias, boss] of Object.entries(BOSS_ALIASES)) {
@@ -63,7 +89,7 @@ function bossByText(text) {
 
 function parsePositions(content) {
   const lower = content.toLowerCase();
-  if (/every\s*pos|all\s*pos|any\s*pos|fill any|any p\b/i.test(lower)) return ['P1','P2','P3','P4'];
+  if (/every\s*pos|all\s*pos|any\s*pos/i.test(lower)) return ['P1', 'P2', 'P3', 'P4'];
   const positions = [];
   for (const m of lower.matchAll(/p\s*([1-4])/g)) {
     const p = `P${m[1]}`;
@@ -72,144 +98,424 @@ function parsePositions(content) {
   return positions;
 }
 
-function parseIGN(content) {
-  // ign: xxx 或 ign xxx
-  const ignMatch = content.match(/ign\s*:?\s*([^\s,@\n]+)/i);
+function parseIGN(content, displayName) {
+  const ignMatch = content.match(/ign\s*:?\s*(\S+)/i);
   if (ignMatch) return ignMatch[1];
-  return null;
+  return displayName;
 }
 
-// 單一頻道：必須同時有 LFG 關鍵字 + boss 名稱（或已被 keywords 匹配）
-function isValidLFGPost(content, bossName) {
-  const lower = content.toLowerCase();
-  const hasLFGKeyword = /\b(lfg|lf\b|lf\+|looking for|\d\/4)\b/i.test(lower);
-  const hasBoss = !!bossName;
-  return hasLFGKeyword && hasBoss;
+// ─── build strat embed + buttons ───────────────────────────────────────────
+async function buildStratMessage(raidName, teamName, signups = {}) {
+  // signups = { P1: { game_id, discord_username } | null, P2: ..., ... }
+  const embed = new EmbedBuilder()
+    .setTitle(`📋 ${raidName} — ${teamName}`)
+    .setColor(0x5865f2)
+    .setDescription(
+      POSITIONS.map(pos => {
+        const s = signups[pos];
+        const icon = POSITION_EMOJI[pos];
+        return s
+          ? `${icon} **${pos}** ｜ ${s.game_id} ✅`
+          : `${icon} **${pos}** ｜ 空位`;
+      }).join('\n')
+    )
+    .setFooter({ text: '點擊按鈕報名 · 再次點擊取消 · 需先執行 /id 綁定遊戲帳號' })
+    .setTimestamp();
+
+  // 第一排：P1 P2 P3 P4
+  const row1 = new ActionRowBuilder().addComponents(
+    POSITIONS.map(pos => {
+      const s = signups[pos];
+      return new ButtonBuilder()
+        .setCustomId(`signup:${pos}`)
+        .setLabel(s ? `${pos} ✅` : `報名 ${pos}`)
+        .setStyle(s ? ButtonStyle.Success : ButtonStyle.Primary)
+        .setDisabled(!!s && false); // 即使有人也可按（用來取消）
+    })
+  );
+
+  // 第二排：取消報名
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('signup:cancel')
+      .setLabel('取消報名')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
 }
 
-async function getStratName(teamId) {
-  if (!teamId) return null;
-  const { data } = await supabase.from('teams').select('name').eq('id', teamId).maybeSingle();
-  return data?.name || null;
-}
+// 從 DB 讀取當前 strat_post 的報名狀態
+async function getSignupsForPost(stratPostId) {
+  const { data } = await supabase
+    .from('discord_signups')
+    .select('position, game_id, discord_username')
+    .eq('strat_post_id', stratPostId);
 
-// 10 分鐘內同一用戶同一頻道的 post
-async function findRecentPost(displayName, channelId, serverId) {
-  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-  const { data } = await supabase.from('lfg_posts')
-    .select('id, raw_message')
-    .eq('discord_server_id', serverId)
-    .eq('discord_channel_id', channelId)
-    .eq('discord_username', displayName)
-    .eq('is_stale', false)
-    .gte('posted_at', tenMinAgo)
-    .order('posted_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return data || null;
-}
-
-async function handleMessage(message) {
-  if (message.author.bot) return;
-  const serverId = message.guildId;
-  const config = SERVER_CONFIGS[serverId];
-  if (!config) return;
-  const content = message.content.trim();
-  if (!content) return;
-
-  await message.member?.fetch().catch(() => {});
-  const displayName = message.member?.nickname
-    || message.author.globalName
-    || message.author.username;
-
-  const avatarUrl = message.author.displayAvatarURL({ size: 64, extension: 'png' });
-
-  let bossName = null;
-  let teamId = null;
-
-  // 先用 keywords 匹配（兩種 server 都先試）
-  const kwMatch = await matchByKeywords(content);
-  if (kwMatch) { bossName = kwMatch.bossName; teamId = kwMatch.teamId; }
-
-  if (config.type === 'split') {
-    const chName = message.channel.name || '';
-    if (!chName.startsWith('lf-') && !chName.includes('-team')) return;
-    // split 頻道：從頻道名補 boss（keyword 沒匹配到的話）
-    if (!bossName) bossName = bossByText(chName);
-    if (!bossName) return;
-  } else {
-    // 單一頻道：嚴格過濾，必須有 LFG 關鍵字 + boss 名稱
-    if (config.channelIds.length > 0 && !config.channelIds.includes(message.channelId)) return;
-    if (!bossName) bossName = bossByText(content);
-    if (!isValidLFGPost(content, bossName)) return;
+  const signups = {};
+  for (const row of data || []) {
+    signups[row.position] = { game_id: row.game_id, discord_username: row.discord_username };
   }
+  return signups;
+}
 
-  const positions = parsePositions(content);
-  const ign = parseIGN(content);
-  const stratName = await getStratName(teamId);
-  const jumpUrl = `https://discord.com/channels/${serverId}/${message.channelId}/${message.id}`;
-  const serverName = message.guild?.name || serverId;
-  const channelName = message.channel?.name || message.channelId;
+// ─── slash command registration ─────────────────────────────────────────────
+async function registerCommands() {
+  const commands = [
+    // /id — 綁定遊戲 ID
+    new SlashCommandBuilder()
+      .setName('id')
+      .setDescription('綁定或查看你的 PokéMMO 遊戲 ID')
+      .addStringOption(opt =>
+        opt.setName('game_id')
+          .setDescription('你的 PokéMMO 遊戲 ID（不填則查看目前綁定）')
+          .setRequired(false)
+      ),
 
-  console.log(`[LFG] ${displayName} | ${bossName} | ${stratName||'?'} | pos:${positions.join(',')} | ign:${ign||'none'}`);
+    // /strat — 發布 strat 招募貼文
+    new SlashCommandBuilder()
+      .setName('strat')
+      .setDescription('發布 Raid Strat 招募貼文')
+      .addStringOption(opt =>
+        opt.setName('raid')
+          .setDescription('選擇 Raid Boss')
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('team')
+          .setDescription('選擇 Strat 隊伍配置')
+          .setRequired(true)
+          .setAutocomplete(true)
+      ),
+  ].map(cmd => cmd.toJSON());
 
-  // 10 分鐘內同一用戶：把新訊息加到 messages 陣列
-  const existing = await findRecentPost(displayName, message.channelId, serverId);
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
-  if (existing) {
-    // 取得現有 messages，加入新訊息
-    const { data: existingPost } = await supabase.from('lfg_posts')
-      .select('messages')
-      .eq('id', existing.id)
-      .single();
-
-    const messages = existingPost?.messages || [existing.raw_message];
-    if (!messages.includes(content)) messages.push(content);
-
-    const updatedPositions = positions.length > 0 ? positions : undefined;
-    await supabase.from('lfg_posts').update({
-      raw_message: content,
-      messages,
-      ...(updatedPositions && { positions: updatedPositions }),
-      ...(ign && { ign }),
-      discord_jump_url: jumpUrl,
-      posted_at: new Date(message.createdTimestamp).toISOString(),
-      is_stale: false,
-    }).eq('id', existing.id);
-  } else {
-    await supabase.from('lfg_posts').upsert({
-      discord_msg_id: message.id,
-      discord_server_id: serverId,
-      discord_channel_id: message.channelId,
-      discord_username: displayName,
-      avatar_url: avatarUrl,
-      ign, boss_name: bossName, team_id: teamId, strat_name: stratName,
-      positions, raw_message: content,
-      messages: [content],
-      posted_at: new Date(message.createdTimestamp).toISOString(),
-      is_stale: false,
-      discord_jump_url: jumpUrl,
-      server_name: serverName,
-      channel_name: channelName,
-    }, { onConflict: 'discord_msg_id' });
+  try {
+    // 全局 command 需要最多 1 小時才能生效
+    // 用 guild command 測試時改用 guildId
+    await rest.put(
+      Routes.applicationCommands(process.env.CLIENT_ID),
+      { body: commands }
+    );
+    console.log('[Bot] Slash commands registered');
+  } catch (err) {
+    console.error('[Bot] Failed to register commands:', err.message);
   }
 }
 
-async function markStale() {
-  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  // 2 小時後變暗
-  await supabase.from('lfg_posts').update({ is_stale: true })
-    .eq('is_stale', false).lt('posted_at', twoHoursAgo);
-  // 7 天後刪除
-  await supabase.from('lfg_posts').delete()
-    .lt('posted_at', sevenDaysAgo);
-}
-
-client.once('ready', () => {
-  console.log(`Bot ready: ${client.user.tag}`);
+// ─── event: ready ───────────────────────────────────────────────────────────
+client.once('ready', async () => {
+  console.log(`[Bot] Ready: ${client.user.tag}`);
+  await registerCommands();
   setInterval(markStale, 10 * 60 * 1000);
 });
 
-client.on('messageCreate', handleMessage);
+// ─── event: autocomplete ────────────────────────────────────────────────────
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isAutocomplete()) return;
+
+  const { raidsCache, teamsCache } = await getRaidConfig();
+
+  if (interaction.commandName === 'strat') {
+    const focused = interaction.options.getFocused(true);
+
+    if (focused.name === 'raid') {
+      const choices = raidsCache
+        .filter(r => r.name.toLowerCase().includes(focused.value.toLowerCase()))
+        .slice(0, 25)
+        .map(r => ({ name: `${r.icon} ${r.name}`, value: String(r.id) }));
+      await interaction.respond(choices);
+    }
+
+    if (focused.name === 'team') {
+      const raidId = interaction.options.getString('raid');
+      const choices = teamsCache
+        .filter(t =>
+          (!raidId || String(t.raid_id) === raidId) &&
+          t.name.toLowerCase().includes(focused.value.toLowerCase())
+        )
+        .slice(0, 25)
+        .map(t => ({ name: t.name, value: String(t.id) }));
+      await interaction.respond(choices);
+    }
+  }
+});
+
+// ─── event: slash commands + buttons ────────────────────────────────────────
+client.on('interactionCreate', async interaction => {
+  // ── /id ───────────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'id') {
+    const gameId = interaction.options.getString('game_id');
+    const discordId = interaction.user.id;
+    const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+
+    if (!gameId) {
+      // 查詢
+      const { data } = await supabase
+        .from('user_bindings')
+        .select('game_id, updated_at')
+        .eq('discord_id', discordId)
+        .single();
+
+      if (!data) {
+        await interaction.reply({
+          content: '❌ 尚未綁定遊戲 ID\n請執行 `/id <遊戲ID>` 來綁定',
+          ephemeral: true,
+        });
+      } else {
+        await interaction.reply({
+          content: `✅ 目前綁定的遊戲 ID：**${data.game_id}**\n如需更改請執行 \`/id <新ID>\``,
+          ephemeral: true,
+        });
+      }
+      return;
+    }
+
+    // 綁定 / 更新
+    const { error } = await supabase.from('user_bindings').upsert({
+      discord_id: discordId,
+      discord_username: discordUsername,
+      game_id: gameId,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'discord_id' });
+
+    if (error) {
+      await interaction.reply({ content: '❌ 綁定失敗，請稍後再試', ephemeral: true });
+    } else {
+      await interaction.reply({
+        content: `✅ 綁定成功！遊戲 ID：**${gameId}**\n之後點擊 Strat 貼文按鈕即可直接報名`,
+        ephemeral: true,
+      });
+    }
+    return;
+  }
+
+  // ── /strat ────────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'strat') {
+    const raidId = parseInt(interaction.options.getString('raid'));
+    const teamId = parseInt(interaction.options.getString('team'));
+
+    const { raidsCache, teamsCache } = await getRaidConfig();
+    const raid = raidsCache.find(r => r.id === raidId);
+    const team = teamsCache.find(t => t.id === teamId);
+
+    if (!raid || !team) {
+      await interaction.reply({ content: '❌ 找不到對應的 Raid 或 Strat', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    const msgPayload = await buildStratMessage(raid.name, team.name, {});
+    const msg = await interaction.followUp(msgPayload);
+
+    // 存入 strat_posts
+    const { data: stratPost, error } = await supabase
+      .from('strat_posts')
+      .insert({
+        message_id: msg.id,
+        channel_id: interaction.channelId,
+        guild_id: interaction.guildId,
+        raid_id: raidId,
+        team_id: teamId,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[Bot] strat_posts insert error:', error.message);
+    } else {
+      console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
+    }
+    return;
+  }
+
+  // ── buttons ───────────────────────────────────────────────────────────────
+  if (!interaction.isButton()) return;
+
+  const [action, value] = interaction.customId.split(':');
+  if (action !== 'signup') return;
+
+  const discordId = interaction.user.id;
+  const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+
+  // 查這則訊息是不是我們的 strat_post
+  const { data: stratPost } = await supabase
+    .from('strat_posts')
+    .select('*, raids(name, icon), teams(name)')
+    .eq('message_id', interaction.message.id)
+    .single();
+
+  if (!stratPost) return; // 不是我們的訊息，忽略
+
+  // 查玩家綁定
+  const { data: binding } = await supabase
+    .from('user_bindings')
+    .select('game_id')
+    .eq('discord_id', discordId)
+    .single();
+
+  if (!binding) {
+    await interaction.reply({
+      content: '❌ 尚未綁定遊戲 ID\n請先執行 `/id <遊戲ID>` 完成綁定',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // ── 取消報名 ──────────────────────────────────────────────────────────────
+  if (value === 'cancel') {
+    const { error } = await supabase
+      .from('discord_signups')
+      .delete()
+      .eq('strat_post_id', stratPost.id)
+      .eq('discord_id', discordId);
+
+    if (error) {
+      await interaction.reply({ content: '❌ 取消失敗，請稍後再試', ephemeral: true });
+      return;
+    }
+
+    // 重新 render embed
+    const signups = await getSignupsForPost(stratPost.id);
+    const raidName = stratPost.raids?.name || 'Raid';
+    const teamName = stratPost.teams?.name || 'Strat';
+    const updated = await buildStratMessage(raidName, teamName, signups);
+    await interaction.update(updated);
+    await interaction.followUp({ content: '✅ 已取消報名', ephemeral: true });
+    return;
+  }
+
+  // ── 報名 / 換位置 ─────────────────────────────────────────────────────────
+  const position = value; // 'P1' ~ 'P4'
+
+  // 確認位置是否已有人（排除自己）
+  const { data: existing } = await supabase
+    .from('discord_signups')
+    .select('discord_id, discord_username')
+    .eq('strat_post_id', stratPost.id)
+    .eq('position', position)
+    .neq('discord_id', discordId)
+    .maybeSingle();
+
+  if (existing) {
+    await interaction.reply({
+      content: `❌ ${position} 已被 **${existing.discord_username}** 佔用`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // 先刪掉這個人在此 strat 的舊報名（換位置）
+  await supabase
+    .from('discord_signups')
+    .delete()
+    .eq('strat_post_id', stratPost.id)
+    .eq('discord_id', discordId);
+
+  // 插入新報名
+  const { error: insertError } = await supabase.from('discord_signups').insert({
+    strat_post_id: stratPost.id,
+    discord_id: discordId,
+    discord_username: discordUsername,
+    game_id: binding.game_id,
+    position,
+  });
+
+  if (insertError) {
+    await interaction.reply({ content: '❌ 報名失敗，請稍後再試', ephemeral: true });
+    return;
+  }
+
+  // 重新 render embed
+  const signups = await getSignupsForPost(stratPost.id);
+  const raidName = stratPost.raids?.name || 'Raid';
+  const teamName = stratPost.teams?.name || 'Strat';
+  const updated = await buildStratMessage(raidName, teamName, signups);
+  await interaction.update(updated);
+  await interaction.followUp({
+    content: `✅ 已報名 **${position}**，遊戲 ID：${binding.game_id}`,
+    ephemeral: true,
+  });
+});
+
+// ─── LFG 訊息監聽（保留原有功能）────────────────────────────────────────────
+client.on('messageCreate', async message => {
+  if (message.author.bot) return;
+
+  const serverId = message.guildId;
+  const config = SERVER_CONFIGS[serverId];
+  if (!config) return;
+
+  if (config.type === 'single' && !config.channelIds.includes(message.channelId)) return;
+
+  const content = message.content;
+  const lower = content.toLowerCase();
+  const hasLFG = /\b(lfg|lf\+?|looking for)\b/i.test(lower);
+  if (!hasLFG) return;
+
+  const displayName = message.member?.nickname || message.author.globalName || message.author.username;
+
+  let bossName = null;
+  let strat_name = null;
+
+  const kwMatch = await (async () => {
+    const keywords = await getKeywords();
+    for (const kw of keywords) {
+      if (lower.includes(kw.keyword.toLowerCase())) {
+        return { bossName: kw.boss_name, stratName: kw.team_id };
+      }
+    }
+    return null;
+  })();
+
+  if (kwMatch) {
+    bossName = kwMatch.bossName;
+    strat_name = kwMatch.stratName;
+  } else {
+    bossName = bossByText(content);
+  }
+
+  if (!bossName) return;
+
+  const positions = parsePositions(content);
+  const ign = parseIGN(content, displayName);
+
+  const serverName = message.guild?.name || serverId;
+  const channelName = message.channel?.name || message.channelId;
+  const jumpUrl = `https://discord.com/channels/${serverId}/${message.channelId}/${message.id}`;
+
+  await supabase.from('lfg_posts').upsert({
+    discord_msg_id: message.id,
+    discord_server_id: serverId,
+    discord_channel_id: message.channelId,
+    discord_username: displayName,
+    ign,
+    boss_name: bossName,
+    strat_name,
+    positions,
+    raw_message: content,
+    posted_at: new Date(message.createdTimestamp).toISOString(),
+    is_stale: false,
+    discord_jump_url: jumpUrl,
+    server_name: serverName,
+    channel_name: channelName,
+  }, { onConflict: 'discord_msg_id' });
+
+  console.log(`[LFG] ${displayName} | ${bossName} | pos: ${positions.join(',')} | ign: ${ign}`);
+});
+
+// ─── stale 清理 ─────────────────────────────────────────────────────────────
+async function markStale() {
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  await supabase
+    .from('lfg_posts')
+    .update({ is_stale: true })
+    .eq('is_stale', false)
+    .lt('posted_at', twoHoursAgo);
+}
+
+// ─── start ───────────────────────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN);

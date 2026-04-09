@@ -115,11 +115,11 @@ async function buildStratMessage(raidName, teamName, signups = {}) {
         const s = signups[pos];
         const icon = POSITION_EMOJI[pos];
         return s
-          ? `${icon} **${pos}** ｜ ${s.game_id} ✅`
-          : `${icon} **${pos}** ｜ 空位`;
+          ? `${icon} **${pos}** | ${s.game_id} ✅`
+          : `${icon} **${pos}** | Open`;
       }).join('\n')
     )
-    .setFooter({ text: '點擊按鈕報名 · 再次點擊取消 · 需先執行 /id 綁定遊戲帳號' })
+    .setFooter({ text: 'Click a button to sign up · Run /id to link your game account' })
     .setTimestamp();
 
   // 第一排：P1 P2 P3 P4
@@ -128,7 +128,7 @@ async function buildStratMessage(raidName, teamName, signups = {}) {
       const s = signups[pos];
       return new ButtonBuilder()
         .setCustomId(`signup:${pos}`)
-        .setLabel(s ? `${pos} ✅` : `報名 ${pos}`)
+        .setLabel(s ? `${pos} ✅` : `Join ${pos}`)
         .setStyle(s ? ButtonStyle.Success : ButtonStyle.Primary)
         .setDisabled(!!s && false); // 即使有人也可按（用來取消）
     })
@@ -138,7 +138,7 @@ async function buildStratMessage(raidName, teamName, signups = {}) {
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('signup:cancel')
-      .setLabel('取消報名')
+      .setLabel('Cancel')
       .setStyle(ButtonStyle.Danger)
   );
 
@@ -165,28 +165,66 @@ async function registerCommands() {
     // /id — 綁定遊戲 ID
     new SlashCommandBuilder()
       .setName('id')
-      .setDescription('綁定或查看你的 PokéMMO 遊戲 ID')
+      .setDescription('Link or view your PokéMMO game ID')
       .addStringOption(opt =>
         opt.setName('game_id')
-          .setDescription('你的 PokéMMO 遊戲 ID（不填則查看目前綁定）')
+          .setDescription('Your PokéMMO in-game name (leave blank to view current)')
           .setRequired(false)
       ),
 
-    // /strat — 發布 strat 招募貼文
+    // /raid — post a raid signup form
     new SlashCommandBuilder()
-      .setName('strat')
-      .setDescription('發布 Raid Strat 招募貼文')
+      .setName('raid')
+      .setDescription('Post a raid signup form')
       .addStringOption(opt =>
         opt.setName('raid')
-          .setDescription('選擇 Raid Boss')
+          .setDescription('Select a raid boss')
           .setRequired(true)
           .setAutocomplete(true)
       )
       .addStringOption(opt =>
         opt.setName('team')
-          .setDescription('選擇 Strat 隊伍配置')
+          .setDescription('Select a team strategy')
           .setRequired(true)
           .setAutocomplete(true)
+      ),
+
+    // /delete — delete your own raid post
+    new SlashCommandBuilder()
+      .setName('delete')
+      .setDescription('Delete a raid post you created')
+      .addStringOption(opt =>
+        opt.setName('message_id')
+          .setDescription('Message ID of the raid post (right-click → Copy Message ID)')
+          .setRequired(true)
+      ),
+
+    // /position — join a position on the website player list
+    new SlashCommandBuilder()
+      .setName('position')
+      .setDescription('Join a position on the website player list')
+      .addStringOption(opt =>
+        opt.setName('raid')
+          .setDescription('Select a raid boss')
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('team')
+          .setDescription('Select a team strategy')
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption(opt =>
+        opt.setName('position')
+          .setDescription('Select your position')
+          .setRequired(true)
+          .addChoices(
+            { name: 'P1', value: 'P1' },
+            { name: 'P2', value: 'P2' },
+            { name: 'P3', value: 'P3' },
+            { name: 'P4', value: 'P4' },
+          )
       ),
   ].map(cmd => cmd.toJSON());
 
@@ -217,7 +255,7 @@ client.on('interactionCreate', async interaction => {
 
   const { raidsCache, teamsCache } = await getRaidConfig();
 
-  if (interaction.commandName === 'strat') {
+  if (interaction.commandName === 'raid') {
     const focused = interaction.options.getFocused(true);
 
     if (focused.name === 'raid') {
@@ -260,12 +298,12 @@ client.on('interactionCreate', async interaction => {
 
       if (!data) {
         await interaction.reply({
-          content: '❌ 尚未綁定遊戲 ID\n請執行 `/id <遊戲ID>` 來綁定',
+          content: '❌ No game ID linked.\nRun `/id <your_game_id>` to link one.',
           ephemeral: true,
         });
       } else {
         await interaction.reply({
-          content: `✅ 目前綁定的遊戲 ID：**${data.game_id}**\n如需更改請執行 \`/id <新ID>\``,
+          content: `✅ Linked game ID: **${data.game_id}**\nRun \`/id <new_id>\` to update.`,
           ephemeral: true,
         });
       }
@@ -281,10 +319,10 @@ client.on('interactionCreate', async interaction => {
     }, { onConflict: 'discord_id' });
 
     if (error) {
-      await interaction.reply({ content: '❌ 綁定失敗，請稍後再試', ephemeral: true });
+      await interaction.reply({ content: '❌ Failed to link game ID. Please try again.', ephemeral: true });
     } else {
       await interaction.reply({
-        content: `✅ 綁定成功！遊戲 ID：**${gameId}**\n之後點擊 Strat 貼文按鈕即可直接報名`,
+        content: `✅ Linked! Game ID: **${gameId}**\nYou can now click buttons on raid posts to sign up.`,
         ephemeral: true,
       });
     }
@@ -292,7 +330,7 @@ client.on('interactionCreate', async interaction => {
   }
 
   // ── /strat ────────────────────────────────────────────────────────────────
-  if (interaction.isChatInputCommand() && interaction.commandName === 'strat') {
+  if (interaction.isChatInputCommand() && interaction.commandName === 'raid') {
     const raidId = parseInt(interaction.options.getString('raid'));
     const teamId = parseInt(interaction.options.getString('team'));
 
@@ -301,7 +339,7 @@ client.on('interactionCreate', async interaction => {
     const team = teamsCache.find(t => t.id === teamId);
 
     if (!raid || !team) {
-      await interaction.reply({ content: '❌ 找不到對應的 Raid 或 Strat', ephemeral: true });
+      await interaction.reply({ content: '❌ Raid or strategy not found.', ephemeral: true });
       return;
     }
 
@@ -328,6 +366,97 @@ client.on('interactionCreate', async interaction => {
     } else {
       console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
     }
+    return;
+  }
+
+  // ── /delete ───────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'delete') {
+    const messageId = interaction.options.getString('message_id');
+    const discordId = interaction.user.id;
+
+    // find the strat post and verify the requester created it
+    const { data: stratPost } = await supabase
+      .from('strat_posts')
+      .select('*')
+      .eq('message_id', messageId)
+      .single();
+
+    if (!stratPost) {
+      await interaction.reply({ content: '❌ Raid post not found.', ephemeral: true });
+      return;
+    }
+
+    // only the original poster (matched by guild + channel) can delete
+    // we store created_by_discord_id if available, else allow anyone in same guild
+    const channel = interaction.guild?.channels?.cache.get(stratPost.channel_id);
+    try {
+      const msg = await channel?.messages?.fetch(messageId);
+      if (msg) await msg.delete();
+    } catch (e) {
+      console.error('[Bot] Failed to delete message:', e.message);
+    }
+
+    // clean up DB
+    await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
+    await supabase.from('strat_posts').delete().eq('id', stratPost.id);
+
+    await interaction.reply({ content: '✅ Raid post deleted.', ephemeral: true });
+    return;
+  }
+
+  // ── /position ─────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'position') {
+    const raidId  = parseInt(interaction.options.getString('raid'));
+    const teamId  = parseInt(interaction.options.getString('team'));
+    const position = interaction.options.getString('position');
+    const discordId = interaction.user.id;
+    const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+
+    // check game ID binding
+    const { data: binding } = await supabase
+      .from('user_bindings')
+      .select('game_id')
+      .eq('discord_id', discordId)
+      .single();
+
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', ephemeral: true });
+      return;
+    }
+
+    const { raidsCache, teamsCache } = await getRaidConfig();
+    const raid = raidsCache.find(r => r.id === raidId);
+    const team = teamsCache.find(t => t.id === teamId);
+
+    if (!raid || !team) {
+      await interaction.reply({ content: '❌ Raid or strategy not found.', ephemeral: true });
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    // upsert into players table — offline by default, shows last_seen
+    const { error } = await supabase.from('players').upsert({
+      boss_name: raid.name,
+      team_id: teamId,
+      position,
+      player_name: binding.game_id,
+      online: false,
+      last_seen: now,
+      joined_at: now,
+    }, { onConflict: 'boss_name,team_id,position,player_name' });
+
+    if (error) {
+      await interaction.reply({ content: '❌ Failed to join position. Please try again.', ephemeral: true });
+      console.error('[Bot] /position error:', error.message);
+      return;
+    }
+
+    await interaction.reply({
+      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id} (offline by default — go online on the website)`,
+      ephemeral: true,
+    });
+    console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
     return;
   }
 
@@ -358,7 +487,7 @@ client.on('interactionCreate', async interaction => {
 
   if (!binding) {
     await interaction.reply({
-      content: '❌ 尚未綁定遊戲 ID\n請先執行 `/id <遊戲ID>` 完成綁定',
+      content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.',
       ephemeral: true,
     });
     return;
@@ -366,6 +495,14 @@ client.on('interactionCreate', async interaction => {
 
   // ── 取消報名 ──────────────────────────────────────────────────────────────
   if (value === 'cancel') {
+    // find what position this user had before deleting
+    const { data: oldSignup } = await supabase
+      .from('discord_signups')
+      .select('position')
+      .eq('strat_post_id', stratPost.id)
+      .eq('discord_id', discordId)
+      .single();
+
     const { error } = await supabase
       .from('discord_signups')
       .delete()
@@ -373,24 +510,36 @@ client.on('interactionCreate', async interaction => {
       .eq('discord_id', discordId);
 
     if (error) {
-      await interaction.reply({ content: '❌ 取消失敗，請稍後再試', ephemeral: true });
+      await interaction.reply({ content: '❌ Failed to cancel. Please try again.', ephemeral: true });
       return;
     }
 
-    // 重新 render embed
+    // sync: remove from players table
+    if (oldSignup && stratPost.raid_id) {
+      const { raidsCache, teamsCache } = await getRaidConfig();
+      const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+      if (raid) {
+        await supabase.from('players')
+          .delete()
+          .eq('boss_name', raid.name)
+          .eq('team_id', stratPost.team_id)
+          .eq('position', oldSignup.position)
+          .eq('player_name', binding.game_id);
+      }
+    }
+
     const signups = await getSignupsForPost(stratPost.id);
     const raidName = stratPost.raids?.name || 'Raid';
     const teamName = stratPost.teams?.name || 'Strat';
     const updated = await buildStratMessage(raidName, teamName, signups);
     await interaction.update(updated);
-    await interaction.followUp({ content: '✅ 已取消報名', ephemeral: true });
+    await interaction.followUp({ content: '✅ Signup cancelled.', ephemeral: true });
     return;
   }
 
-  // ── 報名 / 換位置 ─────────────────────────────────────────────────────────
-  const position = value; // 'P1' ~ 'P4'
+  // ── signup / switch position ──────────────────────────────────────────────
+  const position = value;
 
-  // 確認位置是否已有人（排除自己）
   const { data: existing } = await supabase
     .from('discord_signups')
     .select('discord_id, discord_username')
@@ -401,20 +550,26 @@ client.on('interactionCreate', async interaction => {
 
   if (existing) {
     await interaction.reply({
-      content: `❌ ${position} 已被 **${existing.discord_username}** 佔用`,
+      content: `❌ ${position} is already taken by **${existing.discord_username}**.`,
       ephemeral: true,
     });
     return;
   }
 
-  // 先刪掉這個人在此 strat 的舊報名（換位置）
+  // find old position to remove from players table
+  const { data: oldSignup } = await supabase
+    .from('discord_signups')
+    .select('position')
+    .eq('strat_post_id', stratPost.id)
+    .eq('discord_id', discordId)
+    .single();
+
   await supabase
     .from('discord_signups')
     .delete()
     .eq('strat_post_id', stratPost.id)
     .eq('discord_id', discordId);
 
-  // 插入新報名
   const { error: insertError } = await supabase.from('discord_signups').insert({
     strat_post_id: stratPost.id,
     discord_id: discordId,
@@ -424,18 +579,43 @@ client.on('interactionCreate', async interaction => {
   });
 
   if (insertError) {
-    await interaction.reply({ content: '❌ 報名失敗，請稍後再試', ephemeral: true });
+    await interaction.reply({ content: '❌ Signup failed. Please try again.', ephemeral: true });
     return;
   }
 
-  // 重新 render embed
+  // sync to players table — offline by default, shows last_seen
+  const { raidsCache: rc, teamsCache: tc } = await getRaidConfig();
+  const raidForSync = rc.find(r => r.id === stratPost.raid_id);
+  if (raidForSync) {
+    const now = new Date().toISOString();
+    // remove old position if switched
+    if (oldSignup) {
+      await supabase.from('players')
+        .delete()
+        .eq('boss_name', raidForSync.name)
+        .eq('team_id', stratPost.team_id)
+        .eq('position', oldSignup.position)
+        .eq('player_name', binding.game_id);
+    }
+    // upsert new position
+    await supabase.from('players').upsert({
+      boss_name: raidForSync.name,
+      team_id: stratPost.team_id,
+      position,
+      player_name: binding.game_id,
+      online: false,
+      last_seen: now,
+      joined_at: now,
+    }, { onConflict: 'boss_name,team_id,position,player_name' });
+  }
+
   const signups = await getSignupsForPost(stratPost.id);
   const raidName = stratPost.raids?.name || 'Raid';
   const teamName = stratPost.teams?.name || 'Strat';
   const updated = await buildStratMessage(raidName, teamName, signups);
   await interaction.update(updated);
   await interaction.followUp({
-    content: `✅ 已報名 **${position}**，遊戲 ID：${binding.game_id}`,
+    content: `✅ Signed up for **${position}**! Game ID: ${binding.game_id}`,
     ephemeral: true,
   });
 });

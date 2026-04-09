@@ -778,21 +778,12 @@ client.on('interactionCreate', async interaction => {
   await interaction.update(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, ephemeral: true });
 
-  // notify host — DM + channel mention
+  // DM the host when someone joins
   if (creatorId && creatorId !== discordId) {
     const jumpUrl = `https://discord.com/channels/${stratPost.guild_id}/${stratPost.channel_id}/${stratPost.message_id}`;
-    const notifyMsg = `🔔 <@${creatorId}> **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid!\n⚔️ ${raidName} — ${teamName}`;
-
-    // DM
     try {
       const creator = await interaction.client.users.fetch(creatorId);
-      await creator.send(`${notifyMsg}\n${jumpUrl}`);
-    } catch (e) {}
-
-    // channel mention (visible to all)
-    try {
-      const ch = await interaction.client.channels.fetch(stratPost.channel_id);
-      await ch.send({ content: notifyMsg, allowedMentions: { users: [creatorId] } });
+      await creator.send(`🔔 **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid post!\n⚔️ ${raidName} — ${teamName}\n${jumpUrl}`);
     } catch (e) {}
   }
 });

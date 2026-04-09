@@ -199,7 +199,7 @@ async function getSignupsForPost(stratPostId) {
 }
 
 // ─── build /myposition ephemeral message ────────────────────────────────────
-async function buildMyPositionMessage(gameId) {
+async function buildMyPositionMessage(gameId, page = 0) {
   const { data: entries } = await supabase
     .from('players')
     .select('id, boss_name, team_id, position, online, last_seen')
@@ -211,38 +211,63 @@ async function buildMyPositionMessage(gameId) {
   }
 
   const { teamsCache } = await getRaidConfig();
+  const PAGE_SIZE = 5;
+  const totalPages = Math.ceil(entries.length / PAGE_SIZE);
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const pageEntries = entries.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
-  const lines = entries.map(e => {
+  const lines = entries.map((e, i) => {
     const team = teamsCache.find(t => t.id === e.team_id);
-    return `• **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id} (${e.online ? '🟢 Online' : '⚪ Offline'})`;
+    const marker = e.online ? '🟢' : '⚪';
+    return `${marker} **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id}`;
   }).join('\n');
 
-  // row1: toggle buttons (max 4 per row)
-  const toggleButtons = entries.slice(0, 4).map(e => {
-    const team = teamsCache.find(t => t.id === e.team_id);
-    const stratLabel = team?.name || String(e.team_id);
-    return new ButtonBuilder()
-      .setCustomId(`mytoggle:${e.id}`)
-      .setLabel(`${e.online ? '🟢' : '⚪'} ${e.position} ${stratLabel}`)
-      .setStyle(e.online ? ButtonStyle.Success : ButtonStyle.Secondary);
-  });
+  // row1: toggle (current page, up to 5)
+  const toggleRow = new ActionRowBuilder().addComponents(
+    pageEntries.map(e => {
+      const team = teamsCache.find(t => t.id === e.team_id);
+      const stratLabel = (team?.name || String(e.team_id)).slice(0, 12);
+      return new ButtonBuilder()
+        .setCustomId(`mytoggle:${e.id}:${safePage}`)
+        .setLabel(`${e.online ? '🟢' : '⚪'} ${e.position} ${stratLabel}`)
+        .setStyle(e.online ? ButtonStyle.Success : ButtonStyle.Secondary);
+    })
+  );
 
-  // row2: remove buttons (max 4 per row)
-  const removeButtons = entries.slice(0, 4).map(e => {
-    const team = teamsCache.find(t => t.id === e.team_id);
-    const stratLabel = team?.name || String(e.team_id);
-    return new ButtonBuilder()
-      .setCustomId(`myremove:${e.id}`)
-      .setLabel(`Remove ${e.position} ${stratLabel}`)
-      .setStyle(ButtonStyle.Danger);
-  });
+  // row2: remove (current page, up to 5)
+  const removeRow = new ActionRowBuilder().addComponents(
+    pageEntries.map(e => {
+      const team = teamsCache.find(t => t.id === e.team_id);
+      const stratLabel = (team?.name || String(e.team_id)).slice(0, 10);
+      return new ButtonBuilder()
+        .setCustomId(`myremove:${e.id}:${safePage}`)
+        .setLabel(`Remove ${e.position} ${stratLabel}`)
+        .setStyle(ButtonStyle.Danger);
+    })
+  );
 
-  const rows = [];
-  if (toggleButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(toggleButtons));
-  if (removeButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(removeButtons));
+  const rows = [toggleRow, removeRow];
 
+  // row3: pagination (only if more than 1 page)
+  if (totalPages > 1) {
+    const pageRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`mypage:prev:${safePage}:${gameId}`)
+        .setLabel('◀ Prev')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage === 0),
+      new ButtonBuilder()
+        .setCustomId(`mypage:next:${safePage}:${gameId}`)
+        .setLabel('▶ Next')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage === totalPages - 1),
+    );
+    rows.push(pageRow);
+  }
+
+  const pageInfo = totalPages > 1 ? ` (${safePage + 1}/${totalPages})` : '';
   return {
-    content: `**Your positions** (Game ID: ${gameId}):\n${lines}\n\nToggle online/offline or remove:`,
+    content: `**Your positions** (Game ID: ${gameId})${pageInfo}:\n${lines}\n\nToggle online/offline or remove:`,
     components: rows,
   };
 }
@@ -278,21 +303,29 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     .setFooter({ text: `Run /id to link your game ID · Player list: ${playerListUrl}` })
     .setTimestamp();
 
-  // row1: P1 P2 P3 P4 join/leave toggle
+  // row1: P1 P2 P3 P4 + Leave
   const row1 = new ActionRowBuilder().addComponents(
     ...POSITIONS.map(pos =>
       new ButtonBuilder()
         .setCustomId(`board:${pos}:${teamId}`)
         .setLabel(pos)
         .setStyle(ButtonStyle.Primary)
-    )
+    ),
+    new ButtonBuilder()
+      .setCustomId(`board:leave:${teamId}`)
+      .setLabel('Leave')
+      .setStyle(ButtonStyle.Danger)
   );
 
-  // row2: toggle online/offline
+  // row2: Online 30min | Offline
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`boardonline:toggle:${teamId}`)
-      .setLabel('Toggle Online / Offline')
+      .setCustomId(`boardonline:on:${teamId}`)
+      .setLabel('Online (30 min)')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`boardonline:off:${teamId}`)
+      .setLabel('Offline')
       .setStyle(ButtonStyle.Secondary)
   );
 
@@ -433,6 +466,8 @@ async function registerCommands() {
 client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
   setInterval(markStale, 10 * 60 * 1000);
+  // every minute: expire players whose online_until has passed
+  setInterval(expireOnline, 60 * 1000);
 });
 
 // ─── event: autocomplete ────────────────────────────────────────────────────
@@ -472,7 +507,7 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isChatInputCommand() && interaction.commandName === 'id') {
     const gameId = interaction.options.getString('game_id');
     const discordId = interaction.user.id;
-    const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+    const discordUsername = interaction.user.username;
 
     if (!gameId) {
       // 查詢
@@ -531,7 +566,7 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.deferReply();
 
-    const creatorName = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+    const creatorName = interaction.user.username;
 
     // insert strat_posts first to get the id for row3 buttons
     const { data: stratPost, error } = await supabase
@@ -604,7 +639,7 @@ client.on('interactionCreate', async interaction => {
     const teamId   = parseInt(interaction.options.getString('team'));
     const position = interaction.options.getString('position');
     const discordId = interaction.user.id;
-    const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+    const discordUsername = interaction.user.username;
 
     const { data: binding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
@@ -713,7 +748,7 @@ client.on('interactionCreate', async interaction => {
   const sidOverride = parts[2];
 
   const discordId = interaction.user.id;
-  const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+  const discordUsername = interaction.user.username;
 
   // ── board:P1~P4 — join/leave via strat board (silent) ────────────────────
   if (action === 'board') {
@@ -777,8 +812,39 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── boardonline:toggle — toggle all positions online/offline ──────────────
+  // ── board:leave — remove all positions in this strat ─────────────────────
+  if (action === 'board' && value === 'leave') {
+    const teamId = parseInt(sidOverride);
+
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.', flags: 64 });
+      return;
+    }
+
+    const { data: board } = await supabase
+      .from('strat_boards')
+      .select('*, raids(name)')
+      .eq('team_id', teamId)
+      .eq('message_id', interaction.message.id)
+      .single();
+
+    if (!board) { await interaction.deferUpdate(); return; }
+
+    await supabase.from('players').delete()
+      .eq('boss_name', board.raids?.name || '')
+      .eq('team_id', teamId)
+      .eq('player_name', binding.game_id);
+
+    await interaction.deferUpdate();
+    await refreshStratBoards(teamId);
+    return;
+  }
+
+  // ── boardonline:on/off — set online status ───────────────────────────────
   if (action === 'boardonline') {
+    const setOnline = value === 'on'; // 'on' or 'off'
     const teamId = parseInt(sidOverride);
 
     const { data: binding } = await supabase
@@ -801,11 +867,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     const raidName = board.raids?.name || '';
-
-    // find all positions this player is in for this team
     const { data: myEntries } = await supabase
       .from('players')
-      .select('id, online')
+      .select('id')
       .eq('boss_name', raidName)
       .eq('team_id', teamId)
       .eq('player_name', binding.game_id);
@@ -815,13 +879,14 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // if any are online → set all offline, else set all online
-    const anyOnline = myEntries.some(e => e.online);
-    const newOnline = !anyOnline;
     const now = new Date().toISOString();
+    // if going online, set online_until = now + 30min
+    const onlineUntil = setOnline ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null;
 
     for (const e of myEntries) {
-      await supabase.from('players').update({ online: newOnline, last_seen: now }).eq('id', e.id);
+      await supabase.from('players')
+        .update({ online: setOnline, last_seen: now, online_until: onlineUntil })
+        .eq('id', e.id);
     }
 
     await interaction.deferUpdate();
@@ -830,7 +895,7 @@ client.on('interactionCreate', async interaction => {
   }
 
   // ── my* handlers — don't need stratPost ───────────────────────────────────
-  if (action === 'myremove' || action === 'mytoggle') {
+  if (action === 'myremove' || action === 'mytoggle' || action === 'mypage') {
     const { data: binding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
     if (!binding) {
@@ -838,7 +903,20 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
+    // ── mypage: prev/next ──────────────────────────────────────────────────
+    if (action === 'mypage') {
+      const direction = value; // 'prev' or 'next'
+      const currentPage = parseInt(parts[2]) || 0;
+      const newPage = direction === 'next' ? currentPage + 1 : currentPage - 1;
+      const msg = await buildMyPositionMessage(binding.game_id, newPage);
+      await interaction.update(msg);
+      return;
+    }
+
+    // entryId is parts[1], page is parts[2]
     const entryId = value;
+    const currentPage = parseInt(parts[2]) || 0;
+
     const { data: entry } = await supabase
       .from('players').select('id, boss_name, team_id, position, online, player_name')
       .eq('id', entryId).eq('player_name', binding.game_id).single();
@@ -850,17 +928,18 @@ client.on('interactionCreate', async interaction => {
 
     if (action === 'myremove') {
       await supabase.from('players').delete().eq('id', entryId);
-      const msg = await buildMyPositionMessage(binding.game_id);
-      // if no entries left, show empty message
+      const msg = await buildMyPositionMessage(binding.game_id, currentPage);
       await interaction.update(msg);
       return;
     }
 
     if (action === 'mytoggle') {
       const newOnline = !entry.online;
-      await supabase.from('players').update({ online: newOnline, last_seen: new Date().toISOString() }).eq('id', entryId);
-      // rebuild and update the message in place
-      const msg = await buildMyPositionMessage(binding.game_id);
+      const onlineUntil = newOnline ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null;
+      await supabase.from('players')
+        .update({ online: newOnline, last_seen: new Date().toISOString(), online_until: onlineUntil })
+        .eq('id', entryId);
+      const msg = await buildMyPositionMessage(binding.game_id, currentPage);
       await interaction.update(msg);
       return;
     }
@@ -900,7 +979,7 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const { raidsCache: rc2, teamsCache: tc2 } = await getRaidConfig();
     const raidObj = rc2.find(r => r.id === stratPost.raid_id);
-    const creatorName = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+    const creatorName = interaction.user.username;
     const updated = await buildStratMessage(raidName, teamName, signups, creatorName, stratPost.id, stratPost.team_id);
     await interaction.update(updated);
     return;
@@ -1154,7 +1233,7 @@ client.on('messageCreate', async message => {
   const hasLFG = /\b(lfg|lf\+?|looking for)\b/i.test(lower);
   if (!hasLFG) return;
 
-  const displayName = message.member?.nickname || message.author.globalName || message.author.username;
+  const displayName = message.author.username;
 
   let bossName = null;
   let strat_name = null;
@@ -1213,6 +1292,31 @@ async function markStale() {
     .update({ is_stale: true })
     .eq('is_stale', false)
     .lt('posted_at', twoHoursAgo);
+}
+
+// expire online status after 30 min
+async function expireOnline() {
+  const now = new Date().toISOString();
+  const { data: expired } = await supabase
+    .from('players')
+    .select('id, team_id')
+    .eq('online', true)
+    .not('online_until', 'is', null)
+    .lt('online_until', now);
+
+  if (!expired || expired.length === 0) return;
+
+  // set offline
+  await supabase.from('players')
+    .update({ online: false, online_until: null })
+    .in('id', expired.map(e => e.id));
+
+  // refresh strat boards for affected teams
+  const teamIds = [...new Set(expired.map(e => e.team_id))];
+  for (const tid of teamIds) {
+    refreshStratBoards(tid).catch(() => {});
+  }
+  console.log(`[Bot] Expired online for ${expired.length} player(s)`);
 }
 
 // ─── start ───────────────────────────────────────────────────────────────────

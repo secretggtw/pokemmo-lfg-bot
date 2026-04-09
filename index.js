@@ -116,12 +116,12 @@ function parseIGN(content, displayName) {
 // ─── build strat embed + buttons ───────────────────────────────────────────
 // boss emoji map (server custom emojis)
 const BOSS_EMOJI = {
-  heatran:  '<:heatran:1491844397149458578>',
-  cresselia:'<:cresselia:1491844457346105557>',
-  meloetta: '<:meloetta:1491844482931626145>',
-  terrakion:'<:terrakion:1491844684249567284>',
-  virizion: '<:virizon:1491844654839365775>',
-  cobalion: '<:cobalion:1491844524933255290>',
+  heatran:  '<:heatran:1491856349645242570>',
+  cresselia:'<:cresselia:1491856400257912842>',
+  meloetta: '<:meloetta:1491856580487155784>',
+  cobalion: '<:cobalion:1491856439625384076>',
+  terrakion:'<:terrakion:1491856807705186314>',
+  virizion: '<:virizon:1491856521250996566>',
 };
 
 function getBossEmoji(raidName) {
@@ -149,8 +149,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
     return `**${pos}** | Open`;
   }).join('\n');
 
-  const guideText = guideUrl ? `\n[Guide](${guideUrl})` : '';
-  const description = hostLine + posLines + guideText;
+  const description = hostLine + posLines;
 
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
@@ -187,6 +186,40 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   );
 
   const components = [row1, row2];
+
+  // link buttons row: Guide, Pokemon config, Player list
+  const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
+  const playerListUrl = teamId
+    ? `${baseUrl}/?boss=${encodeURIComponent(raidName)}&team=${teamId}`
+    : baseUrl;
+  const pokemonUrl = teamId
+    ? `${baseUrl}/?strat=${teamId}&tab=All`
+    : baseUrl;
+
+  const linkButtons = [];
+  if (guideUrl) {
+    linkButtons.push(
+      new ButtonBuilder()
+        .setLabel('Guide')
+        .setURL(guideUrl)
+        .setStyle(ButtonStyle.Link)
+    );
+  }
+  if (teamId) {
+    linkButtons.push(
+      new ButtonBuilder()
+        .setLabel('Pokémon')
+        .setURL(pokemonUrl)
+        .setStyle(ButtonStyle.Link),
+      new ButtonBuilder()
+        .setLabel('Player List')
+        .setURL(playerListUrl)
+        .setStyle(ButtonStyle.Link)
+    );
+  }
+  if (linkButtons.length > 0) {
+    components.push(new ActionRowBuilder().addComponents(linkButtons));
+  }
 
   // row3: Kick + Delete (only added when host options are expanded)
   if (stratPostId) {
@@ -325,13 +358,10 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     return `**${pos}** | ${onlineStr} / ${total} total`;
   }).join('\n');
 
-  const guideText = guideUrl ? `\n[Guide](${guideUrl})` : '';
-  const playerListText = `\n[Player List](${playerListUrl})`;
-
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
-    .setDescription(posLines + guideText + playerListText)
+    .setDescription(posLines)
     .setTimestamp();
 
   // row1: P1 P2 P3 P4 + Leave
@@ -360,7 +390,21 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
       .setStyle(ButtonStyle.Secondary)
   );
 
-  return { embeds: [embed], components: [row1, row2] };
+  // row3: link buttons
+  const pokemonUrl = `https://pokemmo-raid-team-finder.vercel.app/?strat=${teamId}&tab=All`;
+  const linkButtons = [];
+  if (guideUrl) {
+    linkButtons.push(
+      new ButtonBuilder().setLabel('Guide').setURL(guideUrl).setStyle(ButtonStyle.Link)
+    );
+  }
+  linkButtons.push(
+    new ButtonBuilder().setLabel('Pokémon').setURL(pokemonUrl).setStyle(ButtonStyle.Link),
+    new ButtonBuilder().setLabel('Player List').setURL(playerListUrl).setStyle(ButtonStyle.Link)
+  );
+  const row3 = new ActionRowBuilder().addComponents(linkButtons);
+
+  return { embeds: [embed], components: [row1, row2, row3] };
 }
 
 // refresh all strat boards for a given team after a player joins/leaves

@@ -1033,7 +1033,10 @@ client.on('interactionCreate', async interaction => {
   }
 
   // find strat post — prefer sidOverride (kick/delete from row2), else lookup by message id
+  // also check thread_message_id in case button is pressed from the thread copy
   let stratPost;
+  let isFromThread = false;
+
   if (sidOverride) {
     const { data } = await supabase
       .from('strat_posts')
@@ -1042,15 +1045,54 @@ client.on('interactionCreate', async interaction => {
       .single();
     stratPost = data;
   } else {
-    const { data } = await supabase
+    // try original message_id first
+    const { data: byMsg } = await supabase
       .from('strat_posts')
       .select('*, raids(name, icon), teams(name), creator_name')
       .eq('message_id', interaction.message.id)
-      .single();
-    stratPost = data;
+      .maybeSingle();
+
+    if (byMsg) {
+      stratPost = byMsg;
+    } else {
+      // try thread_message_id
+      const { data: byThread } = await supabase
+        .from('strat_posts')
+        .select('*, raids(name, icon), teams(name), creator_name')
+        .eq('thread_message_id', interaction.message.id)
+        .maybeSingle();
+      if (byThread) {
+        stratPost = byThread;
+        isFromThread = true;
+      }
+    }
   }
 
   if (!stratPost) return;
+
+  // helper: update the interacted message, then sync the other copy
+  const updateAndSync = async (payload) => {
+    if (isFromThread) {
+      // pressed from thread copy — edit thread msg, then edit original
+      await interaction.message.edit(payload);
+      await interaction.deferUpdate().catch(() => {});
+      try {
+        const ch = await client.channels.fetch(stratPost.channel_id);
+        const orig = await ch.messages.fetch(stratPost.message_id);
+        await orig.edit(payload);
+      } catch (e) {}
+    } else {
+      // pressed from original — update via interaction, then edit thread copy
+      await interaction.update(payload);
+      if (stratPost.thread_message_id && stratPost.thread_channel_id) {
+        try {
+          const threadCh = await client.channels.fetch(stratPost.thread_channel_id);
+          const threadMsg = await threadCh.messages.fetch(stratPost.thread_message_id);
+          await threadMsg.edit(payload);
+        } catch (e) {}
+      }
+    }
+  };
 
   const raidName = stratPost.raids?.name || 'Raid';
   const teamName = stratPost.teams?.name || 'Strat';
@@ -1068,7 +1110,7 @@ client.on('interactionCreate', async interaction => {
     const raidObj = rc2.find(r => r.id === stratPost.raid_id);
     const creatorName = interaction.user.username;
     const updated = await buildStratMessage(raidName, teamName, signups, creatorName, stratPost.id, stratPost.team_id);
-    await interaction.update(updated);
+    await updateAndSync(updated);
     return;
   }
 
@@ -1207,8 +1249,7 @@ client.on('interactionCreate', async interaction => {
 
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
-    await interaction.update(updated);
-    updateStratPostEmbeds(stratPost, updated).catch(() => {});
+    await updateAndSync(updated);
     await interaction.followUp({ content: '✅ All your signups cancelled.', flags: 64 });
     return;
   }
@@ -1238,8 +1279,7 @@ client.on('interactionCreate', async interaction => {
     }
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
-    await interaction.update(updated);
-    updateStratPostEmbeds(stratPost, updated).catch(() => {});
+    await updateAndSync(updated);
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, flags: 64 });
     return;
   }
@@ -1291,8 +1331,7 @@ client.on('interactionCreate', async interaction => {
 
   const signups = await getSignupsForPost(stratPost.id);
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
-  await interaction.update(updated);
-  updateStratPostEmbeds(stratPost, updated).catch(() => {});
+  await updateAndSync(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
 
   // refresh strat boards for this team

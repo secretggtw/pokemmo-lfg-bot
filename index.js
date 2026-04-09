@@ -278,16 +278,25 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     .setFooter({ text: `Run /id to link your game ID · Player list: ${playerListUrl}` })
     .setTimestamp();
 
-  const row = new ActionRowBuilder().addComponents(
+  // row1: P1 P2 P3 P4 join/leave toggle
+  const row1 = new ActionRowBuilder().addComponents(
     ...POSITIONS.map(pos =>
       new ButtonBuilder()
         .setCustomId(`board:${pos}:${teamId}`)
-        .setLabel(`Join ${pos}`)
+        .setLabel(pos)
         .setStyle(ButtonStyle.Primary)
     )
   );
 
-  return { embeds: [embed], components: [row] };
+  // row2: toggle online/offline
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`boardonline:toggle:${teamId}`)
+      .setLabel('Toggle Online / Offline')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { embeds: [embed], components: [row1, row2] };
 }
 
 // refresh all strat boards for a given team after a player joins/leaves
@@ -706,7 +715,7 @@ client.on('interactionCreate', async interaction => {
   const discordId = interaction.user.id;
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
-  // ── board:P1~P4 — join via strat board button ─────────────────────────────
+  // ── board:P1~P4 — join/leave via strat board (silent) ────────────────────
   if (action === 'board') {
     const position = value;
     const teamId = parseInt(sidOverride);
@@ -718,7 +727,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // find board info for this team
     const { data: board } = await supabase
       .from('strat_boards')
       .select('*, raids(name), teams(name)')
@@ -732,10 +740,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     const raidName = board.raids?.name || '';
-    const teamName = board.teams?.name || '';
     const now = new Date().toISOString();
 
-    // check if already joined this position
+    // toggle: already joined → remove, not joined → join
     const { data: existing } = await supabase
       .from('players')
       .select('id')
@@ -746,11 +753,8 @@ client.on('interactionCreate', async interaction => {
       .maybeSingle();
 
     if (existing) {
-      // toggle off
       await supabase.from('players').delete().eq('id', existing.id);
-      await interaction.reply({ content: `✅ Removed from **${position}**.`, flags: 64 });
     } else {
-      // join
       const { error } = await supabase.from('players').upsert({
         boss_name: raidName,
         team_id: teamId,
@@ -761,20 +765,66 @@ client.on('interactionCreate', async interaction => {
         last_seen: now,
         joined_at: now,
       }, { onConflict: 'boss_name,team_id,position,player_name' });
-
       if (error) {
-        await interaction.reply({ content: '❌ Failed to join. Please try again.', flags: 64 });
+        await interaction.reply({ content: '❌ Failed. Please try again.', flags: 64 });
         return;
       }
-
-      const playerListUrl = `https://pokemmo-raid-team-finder.vercel.app/?boss=${encodeURIComponent(raidName)}&team=${teamId}`;
-      await interaction.reply({
-        content: `✅ Joined **${position}** for **${raidName} — ${teamName}**!\nGame ID: ${binding.game_id}\nCheck the player list: ${playerListUrl}`,
-        flags: 64,
-      });
     }
 
-    // refresh the board embed
+    // refresh embed — acknowledge silently via deferUpdate
+    await interaction.deferUpdate();
+    await refreshStratBoards(teamId);
+    return;
+  }
+
+  // ── boardonline:toggle — toggle all positions online/offline ──────────────
+  if (action === 'boardonline') {
+    const teamId = parseInt(sidOverride);
+
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
+      return;
+    }
+
+    const { data: board } = await supabase
+      .from('strat_boards')
+      .select('*, raids(name)')
+      .eq('team_id', teamId)
+      .eq('message_id', interaction.message.id)
+      .single();
+
+    if (!board) {
+      await interaction.reply({ content: '❌ Board not found.', flags: 64 });
+      return;
+    }
+
+    const raidName = board.raids?.name || '';
+
+    // find all positions this player is in for this team
+    const { data: myEntries } = await supabase
+      .from('players')
+      .select('id, online')
+      .eq('boss_name', raidName)
+      .eq('team_id', teamId)
+      .eq('player_name', binding.game_id);
+
+    if (!myEntries || myEntries.length === 0) {
+      await interaction.reply({ content: '❌ You have not joined any position in this strat yet.', flags: 64 });
+      return;
+    }
+
+    // if any are online → set all offline, else set all online
+    const anyOnline = myEntries.some(e => e.online);
+    const newOnline = !anyOnline;
+    const now = new Date().toISOString();
+
+    for (const e of myEntries) {
+      await supabase.from('players').update({ online: newOnline, last_seen: now }).eq('id', e.id);
+    }
+
+    await interaction.deferUpdate();
     await refreshStratBoards(teamId);
     return;
   }

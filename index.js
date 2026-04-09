@@ -206,9 +206,8 @@ async function registerCommands() {
 }
 
 // ─── event: ready ───────────────────────────────────────────────────────────
-client.once('ready', async () => {
+client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
-  await registerCommands();
   setInterval(markStale, 10 * 60 * 1000);
 });
 
@@ -518,4 +517,7 @@ async function markStale() {
 }
 
 // ─── start ───────────────────────────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN);
+// register commands first, then login — avoids race condition in ready event
+registerCommands().then(() => {
+  client.login(process.env.DISCORD_TOKEN);
+});

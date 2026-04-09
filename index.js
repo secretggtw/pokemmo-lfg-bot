@@ -552,8 +552,9 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
+    const playerListUrl = `https://pokemmo-raid-team-finder.vercel.app/?boss=${encodeURIComponent(raid.name)}&team=${teamId}`;
     await interaction.reply({
-      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}`,
+      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}\nCheck the player list: ${playerListUrl}`,
       flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);

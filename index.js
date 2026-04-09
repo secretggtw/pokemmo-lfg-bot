@@ -271,10 +271,10 @@ async function registerCommands() {
           .setRequired(false)
       ),
 
-    // /mystatus — view and manage your current signups
+    // /myposition — view and manage your current signups
     new SlashCommandBuilder()
-      .setName('mystatus')
-      .setDescription('View and remove your current raid signups'),
+      .setName('myposition')
+      .setDescription('View and manage your current raid positions'),
   ].map(cmd => cmd.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -496,6 +496,7 @@ client.on('interactionCreate', async interaction => {
         team_id: teamId,
         position,
         player_name: binding.game_id,
+        discord_username: discordUsername,
         online: false,
         last_seen: now,
         joined_at: now,
@@ -508,9 +509,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    const syncNote = syncToWeb
-      ? '\nSynced to website (offline by default — go online on the website)'
-      : '\nNot synced to website';
+    const syncNote = syncToWeb ? '\nSynced to website.' : '\nNot synced to website.';
 
     await interaction.reply({
       content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}${syncNote}`,
@@ -520,8 +519,8 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── /mystatus ─────────────────────────────────────────────────────────────
-  if (interaction.isChatInputCommand() && interaction.commandName === 'mystatus') {
+  // ── /myposition ─────────────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'myposition') {
     const discordId = interaction.user.id;
 
     const { data: binding } = await supabase
@@ -544,25 +543,45 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // build display + remove buttons
     const { raidsCache, teamsCache } = await getRaidConfig();
     const lines = entries.map(e => {
       const team = teamsCache.find(t => t.id === e.team_id);
       return `• **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id} (${e.online ? '🟢 Online' : '⚪ Offline'})`;
     }).join('\n');
 
-    // up to 5 remove buttons per row
-    const removeButtons = entries.slice(0, 5).map(e =>
-      new ButtonBuilder()
+    // row1: toggle online (up to 4 entries)
+    const toggleButtons = entries.slice(0, 4).map(e => {
+      const team = teamsCache.find(t => t.id === e.team_id);
+      const stratLabel = team?.name || String(e.team_id);
+      return new ButtonBuilder()
+        .setCustomId(`mytoggle:${e.id}`)
+        .setLabel(`${e.online ? '🟢' : '⚪'} ${e.position} ${stratLabel}`)
+        .setStyle(e.online ? ButtonStyle.Success : ButtonStyle.Secondary);
+    });
+
+    // row2: remove buttons (up to 4) + remove all
+    const removeButtons = entries.slice(0, 4).map(e => {
+      const team = teamsCache.find(t => t.id === e.team_id);
+      const stratLabel = team?.name || String(e.team_id);
+      return new ButtonBuilder()
         .setCustomId(`myremove:${e.id}`)
-        .setLabel(`Remove ${e.position} ${e.boss_name}`)
+        .setLabel(`Remove ${e.position} ${stratLabel}`)
+        .setStyle(ButtonStyle.Danger);
+    });
+    removeButtons.push(
+      new ButtonBuilder()
+        .setCustomId(`myremoveall:${binding.game_id}`)
+        .setLabel('Remove All')
         .setStyle(ButtonStyle.Danger)
     );
-    const row = new ActionRowBuilder().addComponents(removeButtons);
+
+    const rows = [];
+    if (toggleButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(toggleButtons));
+    if (removeButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(removeButtons));
 
     await interaction.reply({
-      content: `**Your current signups** (Game ID: ${binding.game_id}):\n${lines}\n\nClick a button to remove:`,
-      components: entries.length > 0 ? [row] : [],
+      content: `**Your current signups** (Game ID: ${binding.game_id}):\n${lines}\n\nToggle online/offline or remove:`,
+      components: rows,
       flags: 64,
     });
     return;
@@ -574,10 +593,52 @@ client.on('interactionCreate', async interaction => {
   const parts = interaction.customId.split(':');
   const action = parts[0];
   const value = parts[1];
-  const sidOverride = parts[2]; // strat_post id encoded in customId (for kick/delete)
+  const sidOverride = parts[2];
 
   const discordId = interaction.user.id;
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
+
+  // ── my* handlers — don't need stratPost ───────────────────────────────────
+  if (action === 'myremove' || action === 'mytoggle' || action === 'myremoveall') {
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.', flags: 64 });
+      return;
+    }
+
+    if (action === 'myremoveall') {
+      await supabase.from('players').delete().eq('player_name', binding.game_id);
+      await interaction.reply({ content: `✅ Removed all positions for **${binding.game_id}**.`, flags: 64 });
+      return;
+    }
+
+    const entryId = value;
+    const { data: entry } = await supabase
+      .from('players').select('id, boss_name, team_id, position, online, player_name')
+      .eq('id', entryId).eq('player_name', binding.game_id).single();
+
+    if (!entry) {
+      await interaction.reply({ content: '❌ Entry not found or does not belong to you.', flags: 64 });
+      return;
+    }
+
+    if (action === 'myremove') {
+      await supabase.from('players').delete().eq('id', entryId);
+      await interaction.reply({ content: `✅ Removed **${entry.position}** from **${entry.boss_name}**.`, flags: 64 });
+      return;
+    }
+
+    if (action === 'mytoggle') {
+      const newOnline = !entry.online;
+      await supabase.from('players').update({ online: newOnline, last_seen: new Date().toISOString() }).eq('id', entryId);
+      await interaction.reply({
+        content: `✅ **${entry.position}** in **${entry.boss_name}** is now ${newOnline ? '🟢 Online' : '⚪ Offline'}.`,
+        flags: 64,
+      });
+      return;
+    }
+  }
 
   // find strat post — prefer sidOverride (kick/delete from row2), else lookup by message id
   let stratPost;
@@ -602,36 +663,6 @@ client.on('interactionCreate', async interaction => {
   const raidName = stratPost.raids?.name || 'Raid';
   const teamName = stratPost.teams?.name || 'Strat';
   const creatorId = stratPost.created_by_discord_id || null;
-
-  // ── myremove — remove own player entry from website list ─────────────────
-  if (action === 'myremove') {
-    const entryId = value;
-    const discordId2 = interaction.user.id;
-
-    const { data: binding } = await supabase
-      .from('user_bindings').select('game_id').eq('discord_id', discordId2).single();
-
-    if (!binding) {
-      await interaction.reply({ content: '❌ No game ID linked.', flags: 64 });
-      return;
-    }
-
-    const { data: entry } = await supabase
-      .from('players').select('id, boss_name, position, player_name')
-      .eq('id', entryId).eq('player_name', binding.game_id).single();
-
-    if (!entry) {
-      await interaction.reply({ content: '❌ Entry not found or does not belong to you.', flags: 64 });
-      return;
-    }
-
-    await supabase.from('players').delete().eq('id', entryId);
-    await interaction.reply({
-      content: `✅ Removed **${entry.position}** from **${entry.boss_name}**.`,
-      flags: 64,
-    });
-    return;
-  }
 
   // ── host:options — ephemeral menu for host ────────────────────────────────
   if (action === 'host' && value === 'options') {

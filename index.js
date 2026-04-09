@@ -30,10 +30,18 @@ const supabase = createClient(
 const POSITIONS = ['P1', 'P2', 'P3', 'P4'];
 
 const POSITION_EMOJI = {
-  P1: '🟦',
-  P2: '🟩',
-  P3: '🟨',
-  P4: '🟥',
+  P1: '🎮',
+  P2: '🎮',
+  P3: '🎮',
+  P4: '🎮',
+};
+
+// position label colors in embed (using unicode bold)
+const POSITION_LABEL = {
+  P1: '🔵 P1',
+  P2: '🟢 P2',
+  P3: '🟡 P3',
+  P4: '🔴 P4',
 };
 
 // LFG 訊息監聽用（保留原有功能）
@@ -105,56 +113,73 @@ function parseIGN(content, displayName) {
 }
 
 // ─── build strat embed + buttons ───────────────────────────────────────────
-async function buildStratMessage(raidName, teamName, signups = {}) {
-  // signups = { P1: { game_id, discord_username } | null, P2: ..., ... }
+async function buildStratMessage(raidName, teamName, signups = {}, creatorId = null, viewerId = null) {
+  // signups = { P1: [...] | {game_id,discord_username} | null }
   const embed = new EmbedBuilder()
     .setTitle(`📋 ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
     .setDescription(
       POSITIONS.map(pos => {
-        const s = signups[pos];
-        const icon = POSITION_EMOJI[pos];
-        return s
-          ? `${icon} **${pos}** | ${s.game_id} ✅`
-          : `${icon} **${pos}** | Open`;
+        const label = POSITION_LABEL[pos];
+        // collect all signups for this position
+        const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+        if (posSignups.length > 0) {
+          return posSignups.map(s => `🎮 **${pos}** | ${s.game_id} ✅`).join('\n');
+        }
+        return `🎮 **${pos}** | Open`;
       }).join('\n')
     )
     .setFooter({ text: 'Click a button to sign up · Run /id to link your game account' })
     .setTimestamp();
 
-  // 第一排：P1 P2 P3 P4
-  const row1 = new ActionRowBuilder().addComponents(
-    POSITIONS.map(pos => {
-      const s = signups[pos];
-      return new ButtonBuilder()
-        .setCustomId(`signup:${pos}`)
-        .setLabel(s ? `${pos} ✅` : `Join ${pos}`)
-        .setStyle(s ? ButtonStyle.Success : ButtonStyle.Primary)
-        .setDisabled(!!s && false); // 即使有人也可按（用來取消）
-    })
-  );
+  // row1: P1 P2 P3 P4 + Cancel
+  const signupButtons = POSITIONS.map(pos => {
+    const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+    const iJoined = viewerId && posSignups.some(s => s.discord_id === viewerId);
+    return new ButtonBuilder()
+      .setCustomId(`signup:${pos}`)
+      .setLabel(iJoined ? `${pos} ✅` : `Join ${pos}`)
+      .setStyle(iJoined ? ButtonStyle.Success : ButtonStyle.Primary);
+  });
 
-  // 第二排：取消報名
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('signup:cancel')
-      .setLabel('Cancel')
-      .setStyle(ButtonStyle.Danger)
-  );
+  const cancelBtn = new ButtonBuilder()
+    .setCustomId('signup:cancel')
+    .setLabel('Cancel')
+    .setStyle(ButtonStyle.Danger);
 
-  return { embeds: [embed], components: [row1, row2] };
+  const row1 = new ActionRowBuilder().addComponents([...signupButtons, cancelBtn]);
+
+  // row2: Delete (creator only) — only shown when we know viewer is creator
+  const isCreator = creatorId && viewerId && creatorId === viewerId;
+  if (isCreator) {
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('post:delete')
+        .setLabel('🗑 Delete Post')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId('post:kick')
+        .setLabel('👢 Kick')
+        .setStyle(ButtonStyle.Secondary),
+    );
+    return { embeds: [embed], components: [row1, row2] };
+  }
+
+  return { embeds: [embed], components: [row1] };
 }
 
-// 從 DB 讀取當前 strat_post 的報名狀態
+// 從 DB 讀取當前 strat_post 的報名狀態（每個 position 可多人）
 async function getSignupsForPost(stratPostId) {
   const { data } = await supabase
     .from('discord_signups')
-    .select('position, game_id, discord_username')
+    .select('position, game_id, discord_username, discord_id')
     .eq('strat_post_id', stratPostId);
 
+  // signups[pos] = array of { game_id, discord_username, discord_id }
   const signups = {};
   for (const row of data || []) {
-    signups[row.position] = { game_id: row.game_id, discord_username: row.discord_username };
+    if (!signups[row.position]) signups[row.position] = [];
+    signups[row.position].push({ game_id: row.game_id, discord_username: row.discord_username, discord_id: row.discord_id });
   }
   return signups;
 }
@@ -255,7 +280,7 @@ client.on('interactionCreate', async interaction => {
 
   const { raidsCache, teamsCache } = await getRaidConfig();
 
-  if (interaction.commandName === 'raid') {
+  if (interaction.commandName === 'raid' || interaction.commandName === 'position') {
     const focused = interaction.options.getFocused(true);
 
     if (focused.name === 'raid') {
@@ -357,6 +382,7 @@ client.on('interactionCreate', async interaction => {
         guild_id: interaction.guildId,
         raid_id: raidId,
         team_id: teamId,
+        created_by_discord_id: interaction.user.id,
       })
       .select()
       .single();
@@ -464,21 +490,60 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
   const [action, value] = interaction.customId.split(':');
-  if (action !== 'signup') return;
-
   const discordId = interaction.user.id;
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
-  // 查這則訊息是不是我們的 strat_post
+  // find strat post
   const { data: stratPost } = await supabase
     .from('strat_posts')
     .select('*, raids(name, icon), teams(name)')
     .eq('message_id', interaction.message.id)
     .single();
 
-  if (!stratPost) return; // 不是我們的訊息，忽略
+  if (!stratPost) return;
 
-  // 查玩家綁定
+  const raidName = stratPost.raids?.name || 'Raid';
+  const teamName = stratPost.teams?.name || 'Strat';
+  const creatorId = stratPost.created_by_discord_id || null;
+
+  // ── post:delete (creator only) ────────────────────────────────────────────
+  if (action === 'post' && value === 'delete') {
+    if (discordId !== creatorId) {
+      await interaction.reply({ content: '❌ Only the post creator can delete this.', ephemeral: true });
+      return;
+    }
+    try { await interaction.message.delete(); } catch (e) {}
+    await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
+    await supabase.from('strat_posts').delete().eq('id', stratPost.id);
+    await interaction.reply({ content: '✅ Post deleted.', ephemeral: true });
+    return;
+  }
+
+  // ── post:kick (creator only) ──────────────────────────────────────────────
+  if (action === 'post' && value === 'kick') {
+    if (discordId !== creatorId) {
+      await interaction.reply({ content: '❌ Only the post creator can kick players.', ephemeral: true });
+      return;
+    }
+    // show current signups so creator can pick who to kick
+    const signups = await getSignupsForPost(stratPost.id);
+    const allSignups = Object.entries(signups).flatMap(([pos, arr]) =>
+      (Array.isArray(arr) ? arr : [arr]).map(s => `${pos}: ${s.game_id}`)
+    );
+    if (allSignups.length === 0) {
+      await interaction.reply({ content: 'No signups to kick.', ephemeral: true });
+      return;
+    }
+    await interaction.reply({
+      content: `**Current signups:**\n${allSignups.join('\n')}\n\nUse \`/kick <game_id>\` to remove a player (coming soon).`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // all remaining actions require game ID binding
+  if (action !== 'signup') return;
+
   const { data: binding } = await supabase
     .from('user_bindings')
     .select('game_id')
@@ -493,83 +558,98 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── 取消報名 ──────────────────────────────────────────────────────────────
+  // ── signup:cancel — remove ALL of this user's signups from this post ──────
   if (value === 'cancel') {
-    // find what position this user had before deleting
-    const { data: oldSignup } = await supabase
+    const { data: oldSignups } = await supabase
       .from('discord_signups')
       .select('position')
       .eq('strat_post_id', stratPost.id)
-      .eq('discord_id', discordId)
-      .single();
+      .eq('discord_id', discordId);
 
-    const { error } = await supabase
+    await supabase
       .from('discord_signups')
       .delete()
       .eq('strat_post_id', stratPost.id)
       .eq('discord_id', discordId);
 
-    if (error) {
-      await interaction.reply({ content: '❌ Failed to cancel. Please try again.', ephemeral: true });
-      return;
-    }
-
     // sync: remove from players table
-    if (oldSignup && stratPost.raid_id) {
-      const { raidsCache, teamsCache } = await getRaidConfig();
+    if (oldSignups?.length && stratPost.raid_id) {
+      const { raidsCache } = await getRaidConfig();
       const raid = raidsCache.find(r => r.id === stratPost.raid_id);
       if (raid) {
-        await supabase.from('players')
-          .delete()
-          .eq('boss_name', raid.name)
-          .eq('team_id', stratPost.team_id)
-          .eq('position', oldSignup.position)
-          .eq('player_name', binding.game_id);
+        for (const s of oldSignups) {
+          await supabase.from('players')
+            .delete()
+            .eq('boss_name', raid.name)
+            .eq('team_id', stratPost.team_id)
+            .eq('position', s.position)
+            .eq('player_name', binding.game_id);
+        }
       }
     }
 
     const signups = await getSignupsForPost(stratPost.id);
-    const raidName = stratPost.raids?.name || 'Raid';
-    const teamName = stratPost.teams?.name || 'Strat';
-    const updated = await buildStratMessage(raidName, teamName, signups);
+    const updated = await buildStratMessage(raidName, teamName, signups, creatorId, discordId);
     await interaction.update(updated);
-    await interaction.followUp({ content: '✅ Signup cancelled.', ephemeral: true });
+    await interaction.followUp({ content: '✅ All signups cancelled.', ephemeral: true });
     return;
   }
 
-  // ── signup / switch position ──────────────────────────────────────────────
+  // ── signup:P1~P4 — toggle: join if not joined, cancel if already joined ───
   const position = value;
 
-  const { data: existing } = await supabase
+  // check if user already signed up for this position (toggle off)
+  const { data: mySignup } = await supabase
     .from('discord_signups')
-    .select('discord_id, discord_username')
+    .select('id')
     .eq('strat_post_id', stratPost.id)
+    .eq('discord_id', discordId)
     .eq('position', position)
-    .neq('discord_id', discordId)
     .maybeSingle();
 
-  if (existing) {
+  if (mySignup) {
+    // toggle off — remove this position
+    await supabase.from('discord_signups').delete().eq('id', mySignup.id);
+
+    // sync remove from players
+    const { raidsCache } = await getRaidConfig();
+    const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+    if (raid) {
+      await supabase.from('players')
+        .delete()
+        .eq('boss_name', raid.name)
+        .eq('team_id', stratPost.team_id)
+        .eq('position', position)
+        .eq('player_name', binding.game_id);
+    }
+
+    const signups = await getSignupsForPost(stratPost.id);
+    const updated = await buildStratMessage(raidName, teamName, signups, creatorId, discordId);
+    await interaction.update(updated);
+    await interaction.followUp({ content: `✅ Removed from **${position}**.`, ephemeral: true });
+    return;
+  }
+
+  // check if position is full (maxPerPos from teams table)
+  const { data: teamRow } = await supabase
+    .from('teams').select('max_per_pos').eq('id', stratPost.team_id).single();
+  const maxPerPos = teamRow?.max_per_pos || 4;
+
+  const { count } = await supabase
+    .from('discord_signups')
+    .select('id', { count: 'exact', head: true })
+    .eq('strat_post_id', stratPost.id)
+    .eq('position', position);
+
+  if (count >= maxPerPos) {
     await interaction.reply({
-      content: `❌ ${position} is already taken by **${existing.discord_username}**.`,
+      content: `❌ **${position}** is full (${maxPerPos}/${maxPerPos}).`,
       ephemeral: true,
     });
     return;
   }
 
-  // find old position to remove from players table
-  const { data: oldSignup } = await supabase
-    .from('discord_signups')
-    .select('position')
-    .eq('strat_post_id', stratPost.id)
-    .eq('discord_id', discordId)
-    .single();
-
-  await supabase
-    .from('discord_signups')
-    .delete()
-    .eq('strat_post_id', stratPost.id)
-    .eq('discord_id', discordId);
-
+  // join this position
   const { error: insertError } = await supabase.from('discord_signups').insert({
     strat_post_id: stratPost.id,
     discord_id: discordId,
@@ -583,21 +663,11 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // sync to players table — offline by default, shows last_seen
-  const { raidsCache: rc, teamsCache: tc } = await getRaidConfig();
+  // sync to players table
+  const { raidsCache: rc } = await getRaidConfig();
   const raidForSync = rc.find(r => r.id === stratPost.raid_id);
   if (raidForSync) {
     const now = new Date().toISOString();
-    // remove old position if switched
-    if (oldSignup) {
-      await supabase.from('players')
-        .delete()
-        .eq('boss_name', raidForSync.name)
-        .eq('team_id', stratPost.team_id)
-        .eq('position', oldSignup.position)
-        .eq('player_name', binding.game_id);
-    }
-    // upsert new position
     await supabase.from('players').upsert({
       boss_name: raidForSync.name,
       team_id: stratPost.team_id,
@@ -610,12 +680,10 @@ client.on('interactionCreate', async interaction => {
   }
 
   const signups = await getSignupsForPost(stratPost.id);
-  const raidName = stratPost.raids?.name || 'Raid';
-  const teamName = stratPost.teams?.name || 'Strat';
-  const updated = await buildStratMessage(raidName, teamName, signups);
+  const updated = await buildStratMessage(raidName, teamName, signups, creatorId, discordId);
   await interaction.update(updated);
   await interaction.followUp({
-    content: `✅ Signed up for **${position}**! Game ID: ${binding.game_id}`,
+    content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`,
     ephemeral: true,
   });
 });

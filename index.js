@@ -18,6 +18,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
   ],
 });
 
@@ -355,6 +356,37 @@ async function refreshStratBoards(teamId) {
   }
 }
 
+// update both the original strat post embed and the thread embed if it exists
+async function updateStratPostEmbeds(stratPost, msgPayload) {
+  const tasks = [];
+
+  // update original message
+  tasks.push((async () => {
+    try {
+      const ch = await client.channels.fetch(stratPost.channel_id);
+      const msg = await ch.messages.fetch(stratPost.message_id);
+      await msg.edit(msgPayload);
+    } catch (e) {
+      console.error('[Bot] updateStratPostEmbeds (original) error:', e.message);
+    }
+  })());
+
+  // update thread message if exists
+  if (stratPost.thread_message_id && stratPost.thread_channel_id) {
+    tasks.push((async () => {
+      try {
+        const threadCh = await client.channels.fetch(stratPost.thread_channel_id);
+        const threadMsg = await threadCh.messages.fetch(stratPost.thread_message_id);
+        await threadMsg.edit(msgPayload);
+      } catch (e) {
+        console.error('[Bot] updateStratPostEmbeds (thread) error:', e.message);
+      }
+    })());
+  }
+
+  await Promise.all(tasks);
+}
+
 // ─── slash command registration ─────────────────────────────────────────────
 async function registerCommands() {
   const commands = [
@@ -466,8 +498,63 @@ async function registerCommands() {
 client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
   setInterval(markStale, 10 * 60 * 1000);
-  // every minute: expire players whose online_until has passed
   setInterval(expireOnline, 60 * 1000);
+});
+
+// ─── event: auto-join threads + sync strat posts ─────────────────────────────
+client.on('threadCreate', async thread => {
+  try {
+    await thread.join();
+    console.log(`[Bot] Joined thread: ${thread.name}`);
+
+    // check if thread was created from a strat_post message
+    // EasyThreads creates thread from the original message — starterMessageId points to it
+    const starterMessageId = thread.id; // for forum threads; for normal threads use thread.parentId
+    const parentMessageId = thread.appliedTags ? null : thread.id;
+
+    // try to find strat_post by the message that spawned this thread
+    // EasyThreads typically names the thread after the message content
+    // we check if any strat_post in this channel has been threaded
+    const { data: posts } = await supabase
+      .from('strat_posts')
+      .select('*, raids(name), teams(name)')
+      .eq('channel_id', thread.parentId)
+      .is('thread_message_id', null);
+
+    if (!posts || posts.length === 0) return;
+
+    // try to fetch the starter message of this thread
+    let starterMsg = null;
+    try {
+      starterMsg = await thread.fetchStarterMessage();
+    } catch (e) {}
+
+    if (!starterMsg) return;
+
+    // check if this starter message matches a strat_post
+    const matchedPost = posts.find(p => p.message_id === starterMsg.id);
+    if (!matchedPost) return;
+
+    const raidName = matchedPost.raids?.name || '';
+    const teamName = matchedPost.teams?.name || '';
+
+    // build and send the same embed in the thread
+    const signups = await getSignupsForPost(matchedPost.id);
+    const msgPayload = await buildStratMessage(raidName, teamName, signups, null, matchedPost.id, matchedPost.team_id);
+    const threadMsg = await thread.send(msgPayload);
+
+    // save thread message info
+    await supabase.from('strat_posts')
+      .update({
+        thread_message_id: threadMsg.id,
+        thread_channel_id: thread.id,
+      })
+      .eq('id', matchedPost.id);
+
+    console.log(`[Bot] Synced strat post to thread: ${thread.name}`);
+  } catch (e) {
+    console.error('[Bot] threadCreate error:', e.message);
+  }
 });
 
 // ─── event: autocomplete ────────────────────────────────────────────────────
@@ -1121,6 +1208,7 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
+    updateStratPostEmbeds(stratPost, updated).catch(() => {});
     await interaction.followUp({ content: '✅ All your signups cancelled.', flags: 64 });
     return;
   }
@@ -1151,6 +1239,7 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
+    updateStratPostEmbeds(stratPost, updated).catch(() => {});
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, flags: 64 });
     return;
   }
@@ -1203,6 +1292,7 @@ client.on('interactionCreate', async interaction => {
   const signups = await getSignupsForPost(stratPost.id);
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
   await interaction.update(updated);
+  updateStratPostEmbeds(stratPost, updated).catch(() => {});
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
 
   // refresh strat boards for this team

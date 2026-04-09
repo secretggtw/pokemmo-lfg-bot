@@ -198,6 +198,55 @@ async function getSignupsForPost(stratPostId) {
   return signups;
 }
 
+// ─── build /myposition ephemeral message ────────────────────────────────────
+async function buildMyPositionMessage(gameId) {
+  const { data: entries } = await supabase
+    .from('players')
+    .select('id, boss_name, team_id, position, online, last_seen')
+    .eq('player_name', gameId)
+    .order('boss_name');
+
+  if (!entries || entries.length === 0) {
+    return { content: `No active signups found for **${gameId}**.`, components: [] };
+  }
+
+  const { teamsCache } = await getRaidConfig();
+
+  const lines = entries.map(e => {
+    const team = teamsCache.find(t => t.id === e.team_id);
+    return `• **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id} (${e.online ? '🟢 Online' : '⚪ Offline'})`;
+  }).join('\n');
+
+  // row1: toggle buttons (max 4 per row)
+  const toggleButtons = entries.slice(0, 4).map(e => {
+    const team = teamsCache.find(t => t.id === e.team_id);
+    const stratLabel = team?.name || String(e.team_id);
+    return new ButtonBuilder()
+      .setCustomId(`mytoggle:${e.id}`)
+      .setLabel(`${e.online ? '🟢' : '⚪'} ${e.position} ${stratLabel}`)
+      .setStyle(e.online ? ButtonStyle.Success : ButtonStyle.Secondary);
+  });
+
+  // row2: remove buttons (max 4 per row)
+  const removeButtons = entries.slice(0, 4).map(e => {
+    const team = teamsCache.find(t => t.id === e.team_id);
+    const stratLabel = team?.name || String(e.team_id);
+    return new ButtonBuilder()
+      .setCustomId(`myremove:${e.id}`)
+      .setLabel(`Remove ${e.position} ${stratLabel}`)
+      .setStyle(ButtonStyle.Danger);
+  });
+
+  const rows = [];
+  if (toggleButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(toggleButtons));
+  if (removeButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(removeButtons));
+
+  return {
+    content: `**Your positions** (Game ID: ${gameId}):\n${lines}\n\nToggle online/offline or remove:`,
+    components: rows,
+  };
+}
+
 // ─── slash command registration ─────────────────────────────────────────────
 async function registerCommands() {
   const commands = [
@@ -264,11 +313,6 @@ async function registerCommands() {
             { name: 'P3', value: 'P3' },
             { name: 'P4', value: 'P4' },
           )
-      )
-      .addBooleanOption(opt =>
-        opt.setName('sync')
-          .setDescription('Sync to the website player list? (default: yes)')
-          .setRequired(false)
       ),
 
     // /myposition — view and manage your current signups
@@ -467,7 +511,6 @@ client.on('interactionCreate', async interaction => {
     const raidId   = parseInt(interaction.options.getString('raid'));
     const teamId   = parseInt(interaction.options.getString('team'));
     const position = interaction.options.getString('position');
-    const syncToWeb = interaction.options.getBoolean('sync') ?? true;
     const discordId = interaction.user.id;
     const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
@@ -490,7 +533,7 @@ client.on('interactionCreate', async interaction => {
 
     const now = new Date().toISOString();
 
-    if (syncToWeb) {
+    {
       const { error } = await supabase.from('players').upsert({
         boss_name: raid.name,
         team_id: teamId,
@@ -509,81 +552,25 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    const syncNote = syncToWeb ? '\nSynced to website.' : '\nNot synced to website.';
-
     await interaction.reply({
-      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}${syncNote}`,
+      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}`,
       flags: 64,
     });
-    console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position} sync=${syncToWeb}`);
+    console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
     return;
   }
 
   // ── /myposition ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'myposition') {
     const discordId = interaction.user.id;
-
     const { data: binding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
-
     if (!binding) {
       await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
       return;
     }
-
-    // fetch all current player entries for this game_id
-    const { data: entries } = await supabase
-      .from('players')
-      .select('id, boss_name, team_id, position, online, last_seen')
-      .eq('player_name', binding.game_id)
-      .order('boss_name');
-
-    if (!entries || entries.length === 0) {
-      await interaction.reply({ content: `No active signups found for **${binding.game_id}**.`, flags: 64 });
-      return;
-    }
-
-    const { raidsCache, teamsCache } = await getRaidConfig();
-    const lines = entries.map(e => {
-      const team = teamsCache.find(t => t.id === e.team_id);
-      return `• **${e.position}** — ${e.boss_name} / ${team?.name || e.team_id} (${e.online ? '🟢 Online' : '⚪ Offline'})`;
-    }).join('\n');
-
-    // row1: toggle online (up to 4 entries)
-    const toggleButtons = entries.slice(0, 4).map(e => {
-      const team = teamsCache.find(t => t.id === e.team_id);
-      const stratLabel = team?.name || String(e.team_id);
-      return new ButtonBuilder()
-        .setCustomId(`mytoggle:${e.id}`)
-        .setLabel(`${e.online ? '🟢' : '⚪'} ${e.position} ${stratLabel}`)
-        .setStyle(e.online ? ButtonStyle.Success : ButtonStyle.Secondary);
-    });
-
-    // row2: remove buttons (up to 4) + remove all
-    const removeButtons = entries.slice(0, 4).map(e => {
-      const team = teamsCache.find(t => t.id === e.team_id);
-      const stratLabel = team?.name || String(e.team_id);
-      return new ButtonBuilder()
-        .setCustomId(`myremove:${e.id}`)
-        .setLabel(`Remove ${e.position} ${stratLabel}`)
-        .setStyle(ButtonStyle.Danger);
-    });
-    removeButtons.push(
-      new ButtonBuilder()
-        .setCustomId(`myremoveall:${binding.game_id}`)
-        .setLabel('Remove All')
-        .setStyle(ButtonStyle.Danger)
-    );
-
-    const rows = [];
-    if (toggleButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(toggleButtons));
-    if (removeButtons.length > 0) rows.push(new ActionRowBuilder().addComponents(removeButtons));
-
-    await interaction.reply({
-      content: `**Your current signups** (Game ID: ${binding.game_id}):\n${lines}\n\nToggle online/offline or remove:`,
-      components: rows,
-      flags: 64,
-    });
+    const msg = await buildMyPositionMessage(binding.game_id);
+    await interaction.reply({ ...msg, flags: 64 });
     return;
   }
 
@@ -599,17 +586,11 @@ client.on('interactionCreate', async interaction => {
   const discordUsername = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
 
   // ── my* handlers — don't need stratPost ───────────────────────────────────
-  if (action === 'myremove' || action === 'mytoggle' || action === 'myremoveall') {
+  if (action === 'myremove' || action === 'mytoggle') {
     const { data: binding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
     if (!binding) {
       await interaction.reply({ content: '❌ No game ID linked.', flags: 64 });
-      return;
-    }
-
-    if (action === 'myremoveall') {
-      await supabase.from('players').delete().eq('player_name', binding.game_id);
-      await interaction.reply({ content: `✅ Removed all positions for **${binding.game_id}**.`, flags: 64 });
       return;
     }
 
@@ -625,17 +606,18 @@ client.on('interactionCreate', async interaction => {
 
     if (action === 'myremove') {
       await supabase.from('players').delete().eq('id', entryId);
-      await interaction.reply({ content: `✅ Removed **${entry.position}** from **${entry.boss_name}**.`, flags: 64 });
+      const msg = await buildMyPositionMessage(binding.game_id);
+      // if no entries left, show empty message
+      await interaction.update(msg);
       return;
     }
 
     if (action === 'mytoggle') {
       const newOnline = !entry.online;
       await supabase.from('players').update({ online: newOnline, last_seen: new Date().toISOString() }).eq('id', entryId);
-      await interaction.reply({
-        content: `✅ **${entry.position}** in **${entry.boss_name}** is now ${newOnline ? '🟢 Online' : '⚪ Offline'}.`,
-        flags: 64,
-      });
+      // rebuild and update the message in place
+      const msg = await buildMyPositionMessage(binding.game_id);
+      await interaction.update(msg);
       return;
     }
   }

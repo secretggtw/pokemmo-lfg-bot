@@ -168,9 +168,9 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const description = hostLine + posLines + linkLine;
 
   const embed = new EmbedBuilder()
-    .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
+    .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(description)
+    .setDescription(`**${teamName}**\n` + hostLine + posLines + linkLine)
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -340,15 +340,17 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     return `**${pos}** | ${onlineStr} / ${total} total`;
   }).join('\n');
 
+  const pokemonUrl = `${baseUrl}/?strat=${teamId}&tab=All`;
+
   const linkParts2 = [];
   if (guideUrl) linkParts2.push(`[Guide](${guideUrl})`);
   linkParts2.push(`[Pokémon](${pokemonUrl})`);
   linkParts2.push(`[Player List](${playerListUrl})`);
 
   const embed = new EmbedBuilder()
-    .setTitle(`${bossEmoji} ${raidName} — ${teamName}`)
+    .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(posLines + '\n' + linkParts2.join(' · '))
+    .setDescription(`**${teamName}**\n` + posLines + '\n' + linkParts2.join(' · '))
     .setTimestamp();
 
   // row1: P1 P2 P3 P4 + Leave

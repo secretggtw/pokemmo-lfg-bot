@@ -113,12 +113,15 @@ function parseIGN(content, displayName) {
 }
 
 // ─── build strat embed + buttons ───────────────────────────────────────────
-// creatorName: display name of post creator (shown with crown in embed)
-// stratPostId: needed for kick/delete customIds in row3
-async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null) {
+async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null) {
   const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
+  const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
+  const playerListUrl = raidName && teamId
+    ? `${baseUrl}/?boss=${encodeURIComponent(raidName)}&team=${teamId}`
+    : baseUrl;
+
   const embed = new EmbedBuilder()
-    .setTitle(`📋 ${raidName} — ${teamName}`)
+    .setTitle(`⚔️ ${raidName} — ${teamName}`)
     .setColor(0x5865f2)
     .setDescription(
       hostLine +
@@ -130,7 +133,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
         return `**${pos}** | Open`;
       }).join('\n')
     )
-    .setFooter({ text: 'Run /id to link your game ID · Use /invite buttons to copy invite commands' })
+    .setFooter({ text: `Run /id to link your game ID · Click /invite buttons to get the invite command · Player list: ${playerListUrl}` })
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
@@ -404,7 +407,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id);
+    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id, teamId);
     const msg = await interaction.followUp(msgPayload);
 
     // update message_id now that we have it
@@ -550,7 +553,7 @@ client.on('interactionCreate', async interaction => {
     const { raidsCache: rc2, teamsCache: tc2 } = await getRaidConfig();
     const raidObj = rc2.find(r => r.id === stratPost.raid_id);
     const creatorName = interaction.member?.nickname || interaction.user.globalName || interaction.user.username;
-    const updated = await buildStratMessage(raidName, teamName, signups, creatorName, stratPost.id);
+    const updated = await buildStratMessage(raidName, teamName, signups, creatorName, stratPost.id, stratPost.team_id);
     await interaction.update(updated);
     return;
   }
@@ -620,7 +623,7 @@ client.on('interactionCreate', async interaction => {
 
     // fetch and update the original strat post message
     const signups = await getSignupsForPost(stratPost.id);
-    const updatedMsg = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
+    const updatedMsg = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     // add back the host options row since creator is using it
     const sid = stratPost.id;
     const row2 = new ActionRowBuilder().addComponents(
@@ -689,7 +692,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
     await interaction.followUp({ content: '✅ All your signups cancelled.', ephemeral: true });
     return;
@@ -719,7 +722,7 @@ client.on('interactionCreate', async interaction => {
         .eq('player_name', binding.game_id);
     }
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await interaction.update(updated);
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, ephemeral: true });
     return;
@@ -771,9 +774,27 @@ client.on('interactionCreate', async interaction => {
   }
 
   const signups = await getSignupsForPost(stratPost.id);
-  const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null);
+  const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
   await interaction.update(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, ephemeral: true });
+
+  // notify host — DM + channel mention
+  if (creatorId && creatorId !== discordId) {
+    const jumpUrl = `https://discord.com/channels/${stratPost.guild_id}/${stratPost.channel_id}/${stratPost.message_id}`;
+    const notifyMsg = `🔔 <@${creatorId}> **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid!\n⚔️ ${raidName} — ${teamName}`;
+
+    // DM
+    try {
+      const creator = await interaction.client.users.fetch(creatorId);
+      await creator.send(`${notifyMsg}\n${jumpUrl}`);
+    } catch (e) {}
+
+    // channel mention (visible to all)
+    try {
+      const ch = await interaction.client.channels.fetch(stratPost.channel_id);
+      await ch.send({ content: notifyMsg, allowedMentions: { users: [creatorId] } });
+    } catch (e) {}
+  }
 });
 
 // ─── LFG 訊息監聽（保留原有功能）────────────────────────────────────────────

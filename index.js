@@ -82,6 +82,7 @@ async function getKeywords() {
 let raidsCache = [];
 let teamsCache = [];
 let configCacheTime = 0;
+const pendingRealtimeRefreshes = new Map();
 
 async function getRaidConfig() {
   if (Date.now() - configCacheTime < 60 * 1000) return { raidsCache, teamsCache };
@@ -428,6 +429,53 @@ async function updateStratPostEmbeds(stratPost, msgPayload) {
   await Promise.all(tasks);
 }
 
+async function refreshStratPostsForTeam(teamId) {
+  const { data: posts } = await supabase
+    .from('strat_posts')
+    .select('*, raids(name), teams(name)')
+    .eq('team_id', teamId);
+
+  if (!posts || posts.length === 0) return;
+
+  for (const stratPost of posts) {
+    try {
+      const raidName = stratPost.raids?.name || 'Raid';
+      const teamName = stratPost.teams?.name || 'Strat';
+      const signups = await getSignupsForPost(stratPost.id);
+      const payload = await buildStratMessage(
+        raidName,
+        teamName,
+        signups,
+        stratPost.creator_name || null,
+        stratPost.id,
+        stratPost.team_id
+      );
+      await updateStratPostEmbeds(stratPost, payload);
+    } catch (e) {
+      console.error(`[Bot] refreshStratPostsForTeam error: team_id=${teamId} strat_post_id=${stratPost.id}`, e.message);
+    }
+  }
+}
+
+function queueRealtimeRefresh(teamId) {
+  if (!teamId) return;
+
+  const existing = pendingRealtimeRefreshes.get(teamId);
+  if (existing) clearTimeout(existing);
+
+  const timeout = setTimeout(async () => {
+    pendingRealtimeRefreshes.delete(teamId);
+    try {
+      await refreshStratBoards(teamId);
+      await refreshStratPostsForTeam(teamId);
+    } catch (e) {
+      console.error(`[Bot] realtime refresh error: team_id=${teamId}`, e.message);
+    }
+  }, 1000);
+
+  pendingRealtimeRefreshes.set(teamId, timeout);
+}
+
 async function syncRaidPostToWebsite({
   messageId,
   channelId,
@@ -592,6 +640,28 @@ async function registerCommands() {
 client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
   setInterval(expireOnline, 60 * 1000);
+
+  supabase
+    .channel('players-realtime-sync')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'players' },
+      payload => {
+        const row = payload.new?.team_id ? payload.new : payload.old;
+        const teamId = row?.team_id;
+        if (!teamId) return;
+
+        queueRealtimeRefresh(teamId);
+      }
+    )
+    .subscribe((status, err) => {
+      if (err) {
+        console.error('[Bot] players realtime subscribe error:', err.message || err);
+        return;
+      }
+
+      console.log(`[Bot] players realtime status: ${status}`);
+    });
 });
 
 // ─── event: auto-join threads + sync strat posts ─────────────────────────────

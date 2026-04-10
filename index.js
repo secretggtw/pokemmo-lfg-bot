@@ -116,12 +116,12 @@ function parseIGN(content, displayName) {
 // ─── build strat embed + buttons ───────────────────────────────────────────
 // boss emoji map (server custom emojis)
 const BOSS_EMOJI = {
-  heatran:  '<:heatran:1491989556696846427>',
-  cresselia:'<:cresselia:1491989507522822255>',
-  meloetta: '<:meloetta:1491989203909611530>',
-  cobalion: '<:cobalion:1491989270137798686>',
-  terrakion:'<:terrakion:1491989450287218708>',
-  virizion: '<:virizon:1491989398433304636>',
+  heatran:  '<:heatran:1491856349645242570>',
+  cresselia:'<:cresselia:1491856400257912842>',
+  meloetta: '<:meloetta:1491856580487155784>',
+  cobalion: '<:cobalion:1491856439625384076>',
+  terrakion:'<:terrakion:1491856807705186314>',
+  virizion: '<:virizon:1491856521250996566>',
 };
 
 function getBossEmoji(raidName) {
@@ -160,7 +160,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const linkParts = [];
   if (guideUrl) linkParts.push(`[Guide](${guideUrl})`);
   if (teamId) {
-    linkParts.push(`[Pokémon](${pokemonUrl})`);
+    linkParts.push(`[Pokemon](${pokemonUrl})`);
     linkParts.push(`[Player List](${playerListUrl})`);
   }
   const linkLine = linkParts.length > 0 ? '\n' + linkParts.join(' · ') : '';
@@ -344,7 +344,7 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
 
   const linkParts2 = [];
   if (guideUrl) linkParts2.push(`[Guide](${guideUrl})`);
-  linkParts2.push(`[Pokémon](${pokemonUrl})`);
+  linkParts2.push(`[Pokemon](${pokemonUrl})`);
   linkParts2.push(`[Player List](${playerListUrl})`);
 
   const infoLine = '\n-# Join to add yourself to the player list · Online (30 min) shows you as available on the website';
@@ -444,10 +444,10 @@ async function registerCommands() {
     // /id — 綁定遊戲 ID
     new SlashCommandBuilder()
       .setName('id')
-      .setDescription('Link or view your PokéMMO game ID')
+      .setDescription('Link or view your PokeMMO game ID')
       .addStringOption(opt =>
         opt.setName('game_id')
-          .setDescription('Your PokéMMO in-game name (leave blank to view current)')
+          .setDescription('Your PokeMMO in-game name (leave blank to view current)')
           .setRequired(false)
       ),
 

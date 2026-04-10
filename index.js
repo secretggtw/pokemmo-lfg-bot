@@ -476,6 +476,42 @@ function queueRealtimeRefresh(teamId) {
   pendingRealtimeRefreshes.set(teamId, timeout);
 }
 
+async function notifyHostOfWebsiteJoin(playerRow) {
+  if (!playerRow?.team_id || !playerRow?.boss_name || !playerRow?.player_name) return;
+
+  const { data: matchingSignup } = await supabase
+    .from('discord_signups')
+    .select('id')
+    .eq('position', playerRow.position)
+    .eq('game_id', playerRow.player_name)
+    .limit(1)
+    .maybeSingle();
+
+  if (matchingSignup) return;
+
+  const { data: posts } = await supabase
+    .from('strat_posts')
+    .select('id, message_id, channel_id, guild_id, created_by_discord_id, raids(name), teams(name)')
+    .eq('team_id', playerRow.team_id);
+
+  if (!posts || posts.length === 0) return;
+
+  const matchedPosts = posts.filter(post => post.raids?.name === playerRow.boss_name && post.created_by_discord_id);
+  if (matchedPosts.length === 0) return;
+
+  for (const post of matchedPosts) {
+    try {
+      const creator = await client.users.fetch(post.created_by_discord_id);
+      const jumpUrl = `https://discord.com/channels/${post.guild_id}/${post.channel_id}/${post.message_id}`;
+      await creator.send(
+        `🔔 **${playerRow.player_name}** joined **${playerRow.position}** from the website.\n⚔️ ${playerRow.boss_name} — ${post.teams?.name || 'Strat'}\n${jumpUrl}`
+      );
+    } catch (e) {
+      console.error(`[Bot] notifyHostOfWebsiteJoin error: strat_post_id=${post.id}`, e.message);
+    }
+  }
+}
+
 async function syncRaidPostToWebsite({
   messageId,
   channelId,
@@ -652,6 +688,12 @@ client.once('ready', () => {
         if (!teamId) return;
 
         queueRealtimeRefresh(teamId);
+
+        if (payload.eventType === 'INSERT' && payload.new) {
+          notifyHostOfWebsiteJoin(payload.new).catch(e =>
+            console.error('[Bot] website join notify error:', e.message)
+          );
+        }
       }
     )
     .subscribe((status, err) => {

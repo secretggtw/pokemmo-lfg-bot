@@ -60,6 +60,10 @@ const SERVER_CONFIGS = {
   },
 };
 
+function isUnknownMessageError(error) {
+  return error?.code === 10008 || /Unknown Message/i.test(error?.message || '');
+}
+
 // ─── keyword cache ──────────────────────────────────────────────────────────
 let keywordsCache = [];
 let keywordsCacheTime = 0;
@@ -373,7 +377,20 @@ async function refreshStratBoards(teamId) {
       const discordMsg = await ch.messages.fetch(board.message_id);
       await discordMsg.edit(msg);
     } catch (e) {
-      console.error('[Bot] refreshStratBoards error:', e.message);
+      if (isUnknownMessageError(e)) {
+        console.warn(`[Bot] refreshStratBoards removing stale board: board_id=${board.id} message_id=${board.message_id}`);
+        const { error: deleteError } = await supabase
+          .from('strat_boards')
+          .delete()
+          .eq('id', board.id);
+
+        if (deleteError) {
+          console.error(`[Bot] refreshStratBoards cleanup error: board_id=${board.id}`, deleteError.message);
+        }
+        continue;
+      }
+
+      console.error(`[Bot] refreshStratBoards error: board_id=${board.id} message_id=${board.message_id}`, e.message);
     }
   }
 }

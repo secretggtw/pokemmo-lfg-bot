@@ -8,6 +8,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  Partials,
 } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -20,6 +21,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessageReactions,
   ],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 const supabase = createClient(
@@ -426,6 +428,59 @@ async function updateStratPostEmbeds(stratPost, msgPayload) {
   await Promise.all(tasks);
 }
 
+async function syncRaidPostToWebsite({
+  messageId,
+  channelId,
+  guildId,
+  discordUsername,
+  ign,
+  bossName,
+  teamId,
+  postedAt,
+}) {
+  const guild = client.guilds.cache.get(guildId);
+  const channel = guild?.channels?.cache.get(channelId);
+  const jumpUrl = `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+
+  const { error } = await supabase.from('lfg_posts').upsert({
+    discord_msg_id: messageId,
+    discord_server_id: guildId,
+    discord_channel_id: channelId,
+    discord_username: discordUsername,
+    ign,
+    boss_name: bossName,
+    strat_name: String(teamId),
+    positions: [],
+    raw_message: `/raid ${bossName} ${teamId}`,
+    posted_at: postedAt || new Date().toISOString(),
+    is_stale: false,
+    discord_jump_url: jumpUrl,
+    server_name: guild?.name || guildId,
+    channel_name: channel?.name || channelId,
+  }, { onConflict: 'discord_msg_id' });
+
+  if (error) {
+    console.error('[Bot] syncRaidPostToWebsite error:', error.message);
+    return false;
+  }
+
+  return true;
+}
+
+async function markWebsitePostStale(messageId) {
+  if (!messageId) return;
+
+  const { error } = await supabase
+    .from('lfg_posts')
+    .update({ is_stale: true })
+    .eq('discord_msg_id', messageId)
+    .eq('is_stale', false);
+
+  if (error) {
+    console.error(`[Bot] markWebsitePostStale error: message_id=${messageId}`, error.message);
+  }
+}
+
 // ─── slash command registration ─────────────────────────────────────────────
 async function registerCommands() {
   const commands = [
@@ -536,7 +591,6 @@ async function registerCommands() {
 // ─── event: ready ───────────────────────────────────────────────────────────
 client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
-  setInterval(markStale, 10 * 60 * 1000);
   setInterval(expireOnline, 60 * 1000);
 });
 
@@ -723,6 +777,16 @@ client.on('interactionCreate', async interaction => {
 
     // update message_id now that we have it
     await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
+    await syncRaidPostToWebsite({
+      messageId: msg.id,
+      channelId: interaction.channelId,
+      guildId: interaction.guildId,
+      discordUsername: interaction.user.username,
+      ign: creatorName,
+      bossName: raid.name,
+      teamId,
+      postedAt: new Date().toISOString(),
+    });
     console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
     return;
   }
@@ -755,6 +819,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     // clean up DB
+    await markWebsitePostStale(messageId);
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
 
@@ -1316,7 +1381,8 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// ─── LFG 訊息監聽（保留原有功能）────────────────────────────────────────────
+// legacy text LFG parser disabled; website sync now comes from /raid only
+if (false) {
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
 
@@ -1391,6 +1457,27 @@ async function markStale() {
     .eq('is_stale', false)
     .lt('posted_at', twoHoursAgo);
 }
+}
+
+client.on('messageDelete', async message => {
+  try {
+    await markWebsitePostStale(message.id);
+
+    const { data: stratPost } = await supabase
+      .from('strat_posts')
+      .select('id')
+      .eq('message_id', message.id)
+      .maybeSingle();
+
+    if (stratPost) {
+      await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
+      await supabase.from('strat_posts').delete().eq('id', stratPost.id);
+      console.log(`[Bot] Synced deleted raid post: ${message.id}`);
+    }
+  } catch (e) {
+    console.error('[Bot] messageDelete sync error:', e.message);
+  }
+});
 
 // expire online status after 30 min
 async function expireOnline() {

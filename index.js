@@ -116,12 +116,12 @@ function parseIGN(content, displayName) {
 // ─── build strat embed + buttons ───────────────────────────────────────────
 // boss emoji map (server custom emojis)
 const BOSS_EMOJI = {
-  heatran:  '<:heatran:1491856349645242570>',
-  cresselia:'<:cresselia:1491856400257912842>',
-  meloetta: '<:meloetta:1491856580487155784>',
-  cobalion: '<:cobalion:1491856439625384076>',
-  terrakion:'<:terrakion:1491856807705186314>',
-  virizion: '<:virizon:1491856521250996566>',
+  heatran:  '<:heatran:1491989556696846427>',
+  cresselia:'<:cresselia:1491989507522822255>',
+  meloetta: '<:meloetta:1491989203909611530>',
+  cobalion: '<:cobalion:1491989270137798686>',
+  terrakion:'<:terrakion:1491989450287218708>',
+  virizion: '<:virizon:1491989398433304636>',
 };
 
 function getBossEmoji(raidName) {

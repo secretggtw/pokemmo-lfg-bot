@@ -625,7 +625,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.respond(choices);
     }
 
-    if (focused.name === 'team') {
+    if (focused.name === 'strat') {
       const raidId = interaction.options.getString('raid');
       const choices = teamsCache
         .filter(t =>

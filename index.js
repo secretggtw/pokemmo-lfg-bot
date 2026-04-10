@@ -972,6 +972,7 @@ client.on('interactionCreate', async interaction => {
     const now = new Date().toISOString();
 
     // toggle: already joined → remove, not joined → join
+    await interaction.deferUpdate();
     const { data: existing } = await supabase
       .from('players')
       .select('id')
@@ -1001,7 +1002,6 @@ client.on('interactionCreate', async interaction => {
     }
 
     // refresh embed — acknowledge silently via deferUpdate
-    await interaction.deferUpdate();
     await refreshStratBoards(teamId);
     return;
   }
@@ -1024,14 +1024,15 @@ client.on('interactionCreate', async interaction => {
       .eq('message_id', interaction.message.id)
       .single();
 
-    if (!board) { await interaction.deferUpdate(); return; }
+    if (!board) { await interaction.reply({ content: '❌ Board not found.', flags: 64 }); return; }
+
+    await interaction.deferUpdate();
 
     await supabase.from('players').delete()
       .eq('boss_name', board.raids?.name || '')
       .eq('team_id', teamId)
       .eq('player_name', binding.game_id);
 
-    await interaction.deferUpdate();
     await refreshStratBoards(teamId);
     return;
   }
@@ -1074,6 +1075,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     const now = new Date().toISOString();
+    await interaction.deferUpdate();
     // if going online, set online_until = now + 30min
     const onlineUntil = setOnline ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null;
 
@@ -1083,7 +1085,6 @@ client.on('interactionCreate', async interaction => {
         .eq('id', e.id);
     }
 
-    await interaction.deferUpdate();
     await refreshStratBoards(teamId);
     return;
   }

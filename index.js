@@ -144,7 +144,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const posLines = POSITIONS.map(pos => {
     const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
     if (posSignups.length > 0) {
-      return posSignups.map(s => `**${pos}** | ${s.game_id} ✅`).join('\n');
+      return posSignups.map(s => `**${pos}** | ${s.game_id} ✅  \`/invite ${s.game_id}\``).join('\n');
     }
     return `**${pos}** | Open`;
   }).join('\n');
@@ -183,25 +183,11 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
     ),
     new ButtonBuilder()
       .setCustomId('signup:cancel')
-      .setLabel('Leave')
+      .setLabel('Clear')
       .setStyle(ButtonStyle.Danger)
   );
 
-  // row2: /invite P1~P4 + Host Options
-  const row2 = new ActionRowBuilder().addComponents(
-    ...POSITIONS.map(pos =>
-      new ButtonBuilder()
-        .setCustomId(`invite:${pos}`)
-        .setLabel(`/invite ${pos}`)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-    new ButtonBuilder()
-      .setCustomId('host:options')
-      .setLabel('Host Options')
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  const components = [row1, row2];
+  const components = [row1];
 
   // row3: Kick + Delete (only added when host options are expanded)
   if (stratPostId) {
@@ -365,7 +351,7 @@ async function buildStratBoard(raidName, teamName, teamId, raidNameForUrl) {
     ),
     new ButtonBuilder()
       .setCustomId(`board:leave:${teamId}`)
-      .setLabel('Leave')
+      .setLabel('Clear')
       .setStyle(ButtonStyle.Danger)
   );
 
@@ -1272,28 +1258,57 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── signup:cancel — remove ALL signups for this user ─────────────────────
+  // ── signup:cancel — creator clears all, others remove only themselves ───────
   if (value === 'cancel') {
-    const { data: oldSignups } = await supabase
-      .from('discord_signups')
-      .select('position')
-      .eq('strat_post_id', stratPost.id)
-      .eq('discord_id', discordId);
+    const isCreator = creatorId && discordId === creatorId;
 
-    await supabase.from('discord_signups').delete()
-      .eq('strat_post_id', stratPost.id)
-      .eq('discord_id', discordId);
+    if (isCreator) {
+      // creator: clear all signups for this post
+      const { data: allSignups } = await supabase
+        .from('discord_signups')
+        .select('position, game_id')
+        .eq('strat_post_id', stratPost.id);
 
-    if (oldSignups?.length && stratPost.raid_id) {
-      const { raidsCache } = await getRaidConfig();
-      const raid = raidsCache.find(r => r.id === stratPost.raid_id);
-      if (raid) {
-        for (const s of oldSignups) {
-          await supabase.from('players').delete()
-            .eq('boss_name', raid.name)
-            .eq('team_id', stratPost.team_id)
-            .eq('position', s.position)
-            .eq('player_name', binding.game_id);
+      await supabase.from('discord_signups').delete()
+        .eq('strat_post_id', stratPost.id);
+
+      // sync: remove all from players table
+      if (allSignups?.length && stratPost.raid_id) {
+        const { raidsCache } = await getRaidConfig();
+        const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+        if (raid) {
+          for (const s of allSignups) {
+            await supabase.from('players').delete()
+              .eq('boss_name', raid.name)
+              .eq('team_id', stratPost.team_id)
+              .eq('position', s.position)
+              .eq('player_name', s.game_id);
+          }
+        }
+      }
+    } else {
+      // regular player: remove only their own signups
+      const { data: oldSignups } = await supabase
+        .from('discord_signups')
+        .select('position')
+        .eq('strat_post_id', stratPost.id)
+        .eq('discord_id', discordId);
+
+      await supabase.from('discord_signups').delete()
+        .eq('strat_post_id', stratPost.id)
+        .eq('discord_id', discordId);
+
+      if (oldSignups?.length && stratPost.raid_id) {
+        const { raidsCache } = await getRaidConfig();
+        const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+        if (raid) {
+          for (const s of oldSignups) {
+            await supabase.from('players').delete()
+              .eq('boss_name', raid.name)
+              .eq('team_id', stratPost.team_id)
+              .eq('position', s.position)
+              .eq('player_name', binding.game_id);
+          }
         }
       }
     }
@@ -1301,7 +1316,6 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await updateAndSync(updated);
-    await interaction.followUp({ content: '✅ All your signups cancelled.', flags: 64 });
     return;
   }
 

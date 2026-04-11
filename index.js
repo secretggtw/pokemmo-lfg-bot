@@ -476,12 +476,27 @@ function queueRealtimeRefresh(teamId) {
   pendingRealtimeRefreshes.set(teamId, timeout);
 }
 
+async function sendHostRaidNotification(stratPost, content, actorGameId = null) {
+  const creatorId = stratPost?.created_by_discord_id;
+  const creatorName = stratPost?.creator_name;
+  if (!creatorId) return;
+  if (actorGameId && creatorName && actorGameId === creatorName) return;
+
+  try {
+    const creator = await client.users.fetch(creatorId);
+    const jumpUrl = `https://discord.com/channels/${stratPost.guild_id}/${stratPost.channel_id}/${stratPost.message_id}`;
+    await creator.send(`${content}\n${jumpUrl}`);
+  } catch (e) {
+    console.error(`[Bot] sendHostRaidNotification error: strat_post_id=${stratPost.id}`, e.message);
+  }
+}
+
 async function notifyHostOfWebsiteJoin(playerRow) {
   if (!playerRow?.team_id || !playerRow?.boss_name || !playerRow?.player_name) return;
 
   const { data: posts } = await supabase
     .from('strat_posts')
-    .select('id, message_id, channel_id, guild_id, created_by_discord_id, raids(name), teams(name)')
+    .select('id, message_id, channel_id, guild_id, created_by_discord_id, creator_name, raids(name), teams(name)')
     .eq('team_id', playerRow.team_id);
 
   if (!posts || posts.length === 0) return;
@@ -509,10 +524,10 @@ async function notifyHostOfWebsiteJoin(playerRow) {
 
       if (matchingSignup) continue;
 
-      const creator = await client.users.fetch(post.created_by_discord_id);
-      const jumpUrl = `https://discord.com/channels/${post.guild_id}/${post.channel_id}/${post.message_id}`;
-      await creator.send(
-        `🔔 **${playerRow.player_name}** joined **${playerRow.position}** from the website.\n⚔️ ${playerRow.boss_name} — ${post.teams?.name || 'Strat'}\n${jumpUrl}`
+      await sendHostRaidNotification(
+        post,
+        `🔔 **${playerRow.player_name}** joined **${playerRow.position}** from the website.\n⚔️ ${playerRow.boss_name} — ${post.teams?.name || 'Strat'}`,
+        playerRow.player_name
       );
     } catch (e) {
       console.error(`[Bot] notifyHostOfWebsiteJoin error: strat_post_id=${post.id}`, e.message);
@@ -1401,6 +1416,13 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await updateAndSync(updated);
+    if (!isCreator && creatorId) {
+      await sendHostRaidNotification(
+        stratPost,
+        `🔔 **${discordUsername}** (${binding.game_id}) left your raid post.\n⚔️ ${raidName} — ${teamName}`,
+        binding.game_id
+      );
+    }
     if (isCreator) {
       await interaction.followUp({ content: '✅ All signups cleared.', flags: 64 });
     } else {
@@ -1435,6 +1457,13 @@ client.on('interactionCreate', async interaction => {
     const signups = await getSignupsForPost(stratPost.id);
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
     await updateAndSync(updated);
+    if (creatorId && creatorId !== discordId) {
+      await sendHostRaidNotification(
+        stratPost,
+        `🔔 **${discordUsername}** (${binding.game_id}) left **${position}** in your raid post.\n⚔️ ${raidName} — ${teamName}`,
+        binding.game_id
+      );
+    }
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, flags: 64 });
     return;
   }
@@ -1491,6 +1520,15 @@ client.on('interactionCreate', async interaction => {
 
   // refresh strat boards for this team
   refreshStratBoards(stratPost.team_id).catch(e => console.error('[Bot] refresh error:', e.message));
+
+  if (creatorId && creatorId !== discordId) {
+    await sendHostRaidNotification(
+      stratPost,
+      `🔔 **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid post!\n⚔️ ${raidName} — ${teamName}`,
+      binding.game_id
+    );
+    return;
+  }
 
   // DM the host when someone joins
   if (creatorId && creatorId !== discordId) {

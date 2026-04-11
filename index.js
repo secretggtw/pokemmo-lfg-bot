@@ -492,7 +492,7 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
 }
 
 async function notifyHostOfWebsiteJoin(playerRow) {
-  if (!playerRow?.team_id || !playerRow?.boss_name || !playerRow?.player_name) return;
+  if (!playerRow?.team_id || !playerRow?.player_name) return;
   if (!playerRow.in_room) return;
 
   const { data: posts } = await supabase
@@ -502,21 +502,20 @@ async function notifyHostOfWebsiteJoin(playerRow) {
 
   if (!posts || posts.length === 0) return;
 
-  const matchedPosts = posts.filter(post =>
-    post.created_by_discord_id &&
-    (!post.raids?.name || post.raids.name === playerRow.boss_name)
-  );
+  const matchedPosts = posts.filter(post => post.created_by_discord_id);
 
   if (matchedPosts.length === 0) {
-    console.log(`[Bot] notifyHostOfWebsiteJoin skipped: no matching strat post for team_id=${playerRow.team_id} boss=${playerRow.boss_name}`);
+    console.log(`[Bot] notifyHostOfWebsiteJoin skipped: no matching strat post for team_id=${playerRow.team_id}`);
     return;
   }
+
+  console.log(`[Bot] notifyHostOfWebsiteJoin matched ${matchedPosts.length} post(s) for team_id=${playerRow.team_id}`);
 
   for (const post of matchedPosts) {
     try {
       await sendHostRaidNotification(
         post,
-        `🔔 **${playerRow.player_name}** joined **${playerRow.position}** from the website.\n⚔️ ${playerRow.boss_name} — ${post.teams?.name || 'Strat'}`,
+        `🔔 **${playerRow.player_name}** joined **${playerRow.position || 'a slot'}** from the website.\n⚔️ ${post.raids?.name || playerRow.boss_name || 'Raid'} — ${post.teams?.name || 'Strat'}`,
         playerRow.player_name
       );
     } catch (e) {

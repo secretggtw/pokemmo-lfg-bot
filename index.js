@@ -1629,11 +1629,30 @@ client.on('messageDelete', async message => {
 
     const { data: stratPost } = await supabase
       .from('strat_posts')
-      .select('id')
+      .select('id, raid_id, team_id')
       .eq('message_id', message.id)
       .maybeSingle();
 
     if (stratPost) {
+      const { data: signups } = await supabase
+        .from('discord_signups')
+        .select('game_id')
+        .eq('strat_post_id', stratPost.id);
+
+      const { raidsCache } = await getRaidConfig();
+      const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+
+      if (raid && signups?.length) {
+        const playerNames = [...new Set(signups.map(s => s.game_id).filter(Boolean))];
+        if (playerNames.length > 0) {
+          await supabase.from('players')
+            .update({ in_room: false })
+            .eq('boss_name', raid.name)
+            .eq('team_id', stratPost.team_id)
+            .in('player_name', playerNames);
+        }
+      }
+
       await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
       await supabase.from('strat_posts').delete().eq('id', stratPost.id);
       console.log(`[Bot] Synced deleted raid post: ${message.id}`);

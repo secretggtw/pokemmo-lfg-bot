@@ -479,16 +479,6 @@ function queueRealtimeRefresh(teamId) {
 async function notifyHostOfWebsiteJoin(playerRow) {
   if (!playerRow?.team_id || !playerRow?.boss_name || !playerRow?.player_name) return;
 
-  const { data: matchingSignup } = await supabase
-    .from('discord_signups')
-    .select('id')
-    .eq('position', playerRow.position)
-    .eq('game_id', playerRow.player_name)
-    .limit(1)
-    .maybeSingle();
-
-  if (matchingSignup) return;
-
   const { data: posts } = await supabase
     .from('strat_posts')
     .select('id, message_id, channel_id, guild_id, created_by_discord_id, raids(name), teams(name)')
@@ -496,11 +486,29 @@ async function notifyHostOfWebsiteJoin(playerRow) {
 
   if (!posts || posts.length === 0) return;
 
-  const matchedPosts = posts.filter(post => post.raids?.name === playerRow.boss_name && post.created_by_discord_id);
-  if (matchedPosts.length === 0) return;
+  const matchedPosts = posts.filter(post =>
+    post.created_by_discord_id &&
+    (!post.raids?.name || post.raids.name === playerRow.boss_name)
+  );
+
+  if (matchedPosts.length === 0) {
+    console.log(`[Bot] notifyHostOfWebsiteJoin skipped: no matching strat post for team_id=${playerRow.team_id} boss=${playerRow.boss_name}`);
+    return;
+  }
 
   for (const post of matchedPosts) {
     try {
+      const { data: matchingSignup } = await supabase
+        .from('discord_signups')
+        .select('id')
+        .eq('strat_post_id', post.id)
+        .eq('position', playerRow.position)
+        .eq('game_id', playerRow.player_name)
+        .limit(1)
+        .maybeSingle();
+
+      if (matchingSignup) continue;
+
       const creator = await client.users.fetch(post.created_by_discord_id);
       const jumpUrl = `https://discord.com/channels/${post.guild_id}/${post.channel_id}/${post.message_id}`;
       await creator.send(

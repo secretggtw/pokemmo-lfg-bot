@@ -493,6 +493,7 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
 
 async function notifyHostOfWebsiteJoin(playerRow) {
   if (!playerRow?.team_id || !playerRow?.boss_name || !playerRow?.player_name) return;
+  if (playerRow.discord_username !== '[room]') return;
 
   const { data: posts } = await supabase
     .from('strat_posts')
@@ -701,11 +702,6 @@ client.once('ready', () => {
 
         queueRealtimeRefresh(teamId);
 
-        if (payload.eventType === 'INSERT' && payload.new) {
-          notifyHostOfWebsiteJoin(payload.new).catch(e =>
-            console.error('[Bot] website join notify error:', e.message)
-          );
-        }
       }
     )
     .subscribe((status, err) => {

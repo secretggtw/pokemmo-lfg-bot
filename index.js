@@ -563,17 +563,16 @@ async function syncRaidPostToWebsite({
   return true;
 }
 
-async function markWebsitePostStale(messageId) {
+async function deleteWebsitePost(messageId) {
   if (!messageId) return;
 
   const { error } = await supabase
     .from('lfg_posts')
-    .update({ is_stale: true })
-    .eq('discord_msg_id', messageId)
-    .eq('is_stale', false);
+    .delete()
+    .eq('discord_msg_id', messageId);
 
   if (error) {
-    console.error(`[Bot] markWebsitePostStale error: message_id=${messageId}`, error.message);
+    console.error(`[Bot] deleteWebsitePost error: message_id=${messageId}`, error.message);
   }
 }
 
@@ -959,7 +958,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     // clean up DB
-    await markWebsitePostStale(messageId);
+    await deleteWebsitePost(messageId);
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
 
@@ -1625,7 +1624,7 @@ async function markStale() {
 
 client.on('messageDelete', async message => {
   try {
-    await markWebsitePostStale(message.id);
+    await deleteWebsitePost(message.id);
 
     const { data: stratPost } = await supabase
       .from('strat_posts')

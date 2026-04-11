@@ -702,6 +702,20 @@ client.once('ready', () => {
 
         queueRealtimeRefresh(teamId);
 
+        const becameRoomJoin =
+          payload.new &&
+          payload.new.discord_username === '[room]' &&
+          (
+            payload.eventType === 'INSERT' ||
+            payload.old?.discord_username !== '[room]'
+          );
+
+        if (becameRoomJoin) {
+          notifyHostOfWebsiteJoin(payload.new).catch(e =>
+            console.error('[Bot] website room join notify error:', e.message)
+          );
+        }
+
       }
     )
     .subscribe((status, err) => {

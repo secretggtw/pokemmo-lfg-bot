@@ -513,17 +513,6 @@ async function notifyHostOfWebsiteJoin(playerRow) {
 
   for (const post of matchedPosts) {
     try {
-      const { data: matchingSignup } = await supabase
-        .from('discord_signups')
-        .select('id')
-        .eq('strat_post_id', post.id)
-        .eq('position', playerRow.position)
-        .eq('game_id', playerRow.player_name)
-        .limit(1)
-        .maybeSingle();
-
-      if (matchingSignup) continue;
-
       await sendHostRaidNotification(
         post,
         `🔔 **${playerRow.player_name}** joined **${playerRow.position}** from the website.\n⚔️ ${playerRow.boss_name} — ${post.teams?.name || 'Strat'}`,

@@ -493,37 +493,32 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
 }
 
 async function notifyHostOfWebsiteRoomEvent(eventRow) {
-  if (!eventRow?.team_id || !eventRow?.player_name) return;
+  if (!eventRow?.strat_post_id || !eventRow?.player_name) return;
   if (!['join', 'leave'].includes(eventRow.action)) return;
 
-  const { data: posts } = await supabase
+  const { data: stratPost } = await supabase
     .from('strat_posts')
     .select('id, message_id, channel_id, guild_id, created_by_discord_id, creator_name, raids(name), teams(name)')
-    .eq('team_id', eventRow.team_id);
+    .eq('id', eventRow.strat_post_id)
+    .maybeSingle();
 
-  if (!posts || posts.length === 0) return;
-
-  const matchedPosts = posts.filter(post => post.created_by_discord_id);
-
-  if (matchedPosts.length === 0) {
-    console.log(`[Bot] notifyHostOfWebsiteRoomEvent skipped: no matching strat post for team_id=${eventRow.team_id}`);
+  if (!stratPost?.created_by_discord_id) {
+    console.log(`[Bot] notifyHostOfWebsiteRoomEvent skipped: no matching strat post for strat_post_id=${eventRow.strat_post_id}`);
     return;
   }
 
-  console.log(`[Bot] notifyHostOfWebsiteRoomEvent matched ${matchedPosts.length} post(s) for team_id=${eventRow.team_id} action=${eventRow.action}`);
+  console.log(`[Bot] notifyHostOfWebsiteRoomEvent matched strat_post_id=${eventRow.strat_post_id} action=${eventRow.action}`);
 
   const actionText = eventRow.action === 'leave' ? 'left' : 'joined';
 
-  for (const post of matchedPosts) {
-    try {
-      await sendHostRaidNotification(
-        post,
-        `🔔 **${eventRow.player_name}** ${actionText} **${eventRow.position || 'a slot'}** from the website.\n⚔️ ${post.raids?.name || eventRow.boss_name || 'Raid'} — ${post.teams?.name || 'Strat'}`,
-        eventRow.player_name
-      );
-    } catch (e) {
-      console.error(`[Bot] notifyHostOfWebsiteRoomEvent error: strat_post_id=${post.id}`, e.message);
-    }
+  try {
+    await sendHostRaidNotification(
+      stratPost,
+      `🔔 **${eventRow.player_name}** ${actionText} **${eventRow.position || 'a slot'}** from the website.\n⚔️ ${stratPost.raids?.name || eventRow.boss_name || 'Raid'} — ${stratPost.teams?.name || 'Strat'}`,
+      eventRow.player_name
+    );
+  } catch (e) {
+    console.error(`[Bot] notifyHostOfWebsiteRoomEvent error: strat_post_id=${eventRow.strat_post_id}`, e.message);
   }
 }
 

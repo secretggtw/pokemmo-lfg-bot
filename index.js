@@ -914,7 +914,7 @@ client.on('interactionCreate', async interaction => {
 
     // update message_id now that we have it
     await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
-    await syncRaidPostToWebsite({
+    const synced = await syncRaidPostToWebsite({
       messageId: msg.id,
       channelId: interaction.channelId,
       guildId: interaction.guildId,
@@ -924,6 +924,16 @@ client.on('interactionCreate', async interaction => {
       teamId,
       postedAt: new Date().toISOString(),
     });
+    if (!synced) {
+      try {
+        await msg.delete().catch(() => {});
+        await supabase.from('strat_posts').delete().eq('id', stratPost.id);
+      } catch (cleanupError) {
+        console.error('[Bot] /raid cleanup after sync failure error:', cleanupError.message);
+      }
+      await interaction.followUp({ content: '❌ Failed to sync the raid post to the website. Please try again.', flags: 64 });
+      return;
+    }
     console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
     return;
   }

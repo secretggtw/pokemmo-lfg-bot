@@ -480,6 +480,7 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
   const creatorId = stratPost?.created_by_discord_id;
   const creatorName = stratPost?.creator_name;
   if (!creatorId) return;
+  if (!/^\d+$/.test(String(creatorId))) return;
   if (actorGameId && creatorName && actorGameId === creatorName) return;
 
   try {
@@ -491,9 +492,9 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
   }
 }
 
-async function notifyHostOfWebsiteRoomJoin(eventRow) {
+async function notifyHostOfWebsiteRoomEvent(eventRow) {
   if (!eventRow?.team_id || !eventRow?.player_name) return;
-  if (eventRow.action !== 'join') return;
+  if (!['join', 'leave'].includes(eventRow.action)) return;
 
   const { data: posts } = await supabase
     .from('strat_posts')
@@ -505,21 +506,23 @@ async function notifyHostOfWebsiteRoomJoin(eventRow) {
   const matchedPosts = posts.filter(post => post.created_by_discord_id);
 
   if (matchedPosts.length === 0) {
-    console.log(`[Bot] notifyHostOfWebsiteRoomJoin skipped: no matching strat post for team_id=${eventRow.team_id}`);
+    console.log(`[Bot] notifyHostOfWebsiteRoomEvent skipped: no matching strat post for team_id=${eventRow.team_id}`);
     return;
   }
 
-  console.log(`[Bot] notifyHostOfWebsiteRoomJoin matched ${matchedPosts.length} post(s) for team_id=${eventRow.team_id}`);
+  console.log(`[Bot] notifyHostOfWebsiteRoomEvent matched ${matchedPosts.length} post(s) for team_id=${eventRow.team_id} action=${eventRow.action}`);
+
+  const actionText = eventRow.action === 'leave' ? 'left' : 'joined';
 
   for (const post of matchedPosts) {
     try {
       await sendHostRaidNotification(
         post,
-        `🔔 **${eventRow.player_name}** joined **${eventRow.position || 'a slot'}** from the website.\n⚔️ ${post.raids?.name || eventRow.boss_name || 'Raid'} — ${post.teams?.name || 'Strat'}`,
+        `🔔 **${eventRow.player_name}** ${actionText} **${eventRow.position || 'a slot'}** from the website.\n⚔️ ${post.raids?.name || eventRow.boss_name || 'Raid'} — ${post.teams?.name || 'Strat'}`,
         eventRow.player_name
       );
     } catch (e) {
-      console.error(`[Bot] notifyHostOfWebsiteRoomJoin error: strat_post_id=${post.id}`, e.message);
+      console.error(`[Bot] notifyHostOfWebsiteRoomEvent error: strat_post_id=${post.id}`, e.message);
     }
   }
 }
@@ -718,7 +721,7 @@ client.once('ready', () => {
       payload => {
         if (!payload.new) return;
 
-        notifyHostOfWebsiteRoomJoin(payload.new).catch(e =>
+        notifyHostOfWebsiteRoomEvent(payload.new).catch(e =>
           console.error('[Bot] raid_room_events notify error:', e.message)
         );
       }

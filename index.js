@@ -399,22 +399,33 @@ async function refreshStratBoards(teamId) {
 }
 
 // update both the original strat post embed and the thread embed if it exists
+function isDiscordSnowflake(value) {
+  return /^\d+$/.test(String(value || ''));
+}
+
 async function updateStratPostEmbeds(stratPost, msgPayload) {
   const tasks = [];
 
   // update original message
-  tasks.push((async () => {
-    try {
-      const ch = await client.channels.fetch(stratPost.channel_id);
-      const msg = await ch.messages.fetch(stratPost.message_id);
-      await msg.edit(msgPayload);
-    } catch (e) {
-      console.error('[Bot] updateStratPostEmbeds (original) error:', e.message);
-    }
-  })());
+  if (isDiscordSnowflake(stratPost.channel_id) && isDiscordSnowflake(stratPost.message_id)) {
+    tasks.push((async () => {
+      try {
+        const ch = await client.channels.fetch(stratPost.channel_id);
+        const msg = await ch.messages.fetch(stratPost.message_id);
+        await msg.edit(msgPayload);
+      } catch (e) {
+        console.error('[Bot] updateStratPostEmbeds (original) error:', e.message);
+      }
+    })());
+  }
 
   // update thread message if exists
-  if (stratPost.thread_message_id && stratPost.thread_channel_id) {
+  if (
+    stratPost.thread_message_id &&
+    stratPost.thread_channel_id &&
+    isDiscordSnowflake(stratPost.thread_message_id) &&
+    isDiscordSnowflake(stratPost.thread_channel_id)
+  ) {
     tasks.push((async () => {
       try {
         const threadCh = await client.channels.fetch(stratPost.thread_channel_id);
@@ -439,6 +450,10 @@ async function refreshStratPostsForTeam(teamId) {
 
   for (const stratPost of posts) {
     try {
+      if (!isDiscordSnowflake(stratPost.channel_id) || !isDiscordSnowflake(stratPost.message_id)) {
+        continue;
+      }
+
       const raidName = stratPost.raids?.name || 'Raid';
       const teamName = stratPost.teams?.name || 'Strat';
       const signups = await getSignupsForPost(stratPost.id);
@@ -480,7 +495,7 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
   const creatorId = stratPost?.created_by_discord_id;
   const creatorName = stratPost?.creator_name;
   if (!creatorId) return;
-  if (!/^\d+$/.test(String(creatorId))) return;
+  if (!isDiscordSnowflake(creatorId)) return;
   if (actorGameId && creatorName && actorGameId === creatorName) return;
 
   try {
@@ -493,8 +508,14 @@ async function sendHostRaidNotification(stratPost, content, actorGameId = null) 
 }
 
 async function notifyHostOfWebsiteRoomEvent(eventRow) {
-  if (!eventRow?.strat_post_id || !eventRow?.player_name) return;
-  if (!['join', 'leave'].includes(eventRow.action)) return;
+  if (!eventRow?.strat_post_id || !eventRow?.player_name) {
+    console.log('[Bot] notifyHostOfWebsiteRoomEvent skipped: missing strat_post_id or player_name');
+    return;
+  }
+  if (!['join', 'leave'].includes(eventRow.action)) {
+    console.log(`[Bot] notifyHostOfWebsiteRoomEvent skipped: unsupported action=${eventRow?.action}`);
+    return;
+  }
 
   const { data: stratPost } = await supabase
     .from('strat_posts')

@@ -213,6 +213,28 @@ async function getSignupsForPost(stratPostId) {
   return signups;
 }
 
+async function setAllPlayerEntriesOnlineState(gameId, setOnline) {
+  const updates = setOnline
+    ? {
+        online: true,
+        last_seen: new Date().toISOString(),
+        online_until: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      }
+    : {
+        online: false,
+        online_until: null,
+      };
+
+  const { data, error } = await supabase
+    .from('players')
+    .update(updates)
+    .eq('player_name', gameId)
+    .select('team_id');
+
+  if (error) throw error;
+  return [...new Set((data || []).map(row => row.team_id).filter(Boolean))];
+}
+
 // ─── build /myposition ephemeral message ────────────────────────────────────
 async function buildMyPositionMessage(gameId, page = 0) {
   const { data: entries } = await supabase
@@ -668,6 +690,14 @@ async function registerCommands() {
       .setName('myposition')
       .setDescription('View and manage your current raid positions'),
 
+    new SlashCommandBuilder()
+      .setName('online')
+      .setDescription('Set all your joined positions to online for 30 minutes'),
+
+    new SlashCommandBuilder()
+      .setName('offline')
+      .setDescription('Set all your joined positions to offline'),
+
     // /strat — create a permanent strat board showing player counts
     new SlashCommandBuilder()
       .setName('strat')
@@ -986,6 +1016,26 @@ client.on('interactionCreate', async interaction => {
       console.error('[Bot] Failed to delete message:', e.message);
     }
 
+    const { data: signups } = await supabase
+      .from('discord_signups')
+      .select('position, game_id')
+      .eq('strat_post_id', stratPost.id);
+
+    if (signups?.length) {
+      const { raidsCache } = await getRaidConfig();
+      const raid = raidsCache.find(r => r.id === stratPost.raid_id);
+      if (raid) {
+        for (const signup of signups) {
+          await supabase.from('players')
+            .update({ in_room: false, online: false, online_until: null })
+            .eq('boss_name', raid.name)
+            .eq('team_id', stratPost.team_id)
+            .eq('position', signup.position)
+            .eq('player_name', signup.game_id);
+        }
+      }
+    }
+
     // clean up DB
     await deleteWebsitePost(messageId);
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
@@ -1029,7 +1079,9 @@ client.on('interactionCreate', async interaction => {
         position,
         player_name: binding.game_id,
         discord_username: discordUsername,
+        in_room: false,
         online: false,
+        online_until: null,
         last_seen: now,
         joined_at: now,
       }, { onConflict: 'boss_name,team_id,position,player_name' });
@@ -1063,6 +1115,35 @@ client.on('interactionCreate', async interaction => {
     }
     const msg = await buildMyPositionMessage(binding.game_id);
     await interaction.reply({ ...msg, flags: 64 });
+    return;
+  }
+
+  if (interaction.isChatInputCommand() && (interaction.commandName === 'online' || interaction.commandName === 'offline')) {
+    const discordId = interaction.user.id;
+    const setOnline = interaction.commandName === 'online';
+    const { data: binding } = await supabase
+      .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
+    if (!binding) {
+      await interaction.reply({ content: '❌ No game ID linked.\nRun `/id <your_game_id>` first.', flags: 64 });
+      return;
+    }
+
+    const teamIds = await setAllPlayerEntriesOnlineState(binding.game_id, setOnline);
+    if (teamIds.length === 0) {
+      await interaction.reply({ content: '❌ No joined positions found.', flags: 64 });
+      return;
+    }
+
+    for (const teamId of teamIds) {
+      refreshStratBoards(teamId).catch(() => {});
+    }
+
+    await interaction.reply({
+      content: setOnline
+        ? '✅ All your joined positions are now online for 30 minutes.'
+        : '✅ All your joined positions are now offline.',
+      flags: 64,
+    });
     return;
   }
 
@@ -1159,7 +1240,9 @@ client.on('interactionCreate', async interaction => {
         position,
         player_name: binding.game_id,
         discord_username: discordUsername,
+        in_room: false,
         online: false,
+        online_until: null,
         last_seen: now,
         joined_at: now,
       }, { onConflict: 'boss_name,team_id,position,player_name' });
@@ -1411,7 +1494,7 @@ client.on('interactionCreate', async interaction => {
         const raid = raidsCache.find(r => r.id === stratPost.raid_id);
         if (raid) {
           for (const s of allSignups) {
-            await supabase.from('players').delete()
+            await supabase.from('players').update({ in_room: false, online: false, online_until: null })
               .eq('boss_name', raid.name)
               .eq('team_id', stratPost.team_id)
               .eq('position', s.position)
@@ -1436,7 +1519,7 @@ client.on('interactionCreate', async interaction => {
         const raid = raidsCache.find(r => r.id === stratPost.raid_id);
         if (raid) {
           for (const s of oldSignups) {
-            await supabase.from('players').delete()
+            await supabase.from('players').update({ in_room: false, online: false, online_until: null })
               .eq('boss_name', raid.name)
               .eq('team_id', stratPost.team_id)
               .eq('position', s.position)
@@ -1481,7 +1564,7 @@ client.on('interactionCreate', async interaction => {
     const { raidsCache } = await getRaidConfig();
     const raid = raidsCache.find(r => r.id === stratPost.raid_id);
     if (raid) {
-      await supabase.from('players').delete()
+      await supabase.from('players').update({ in_room: false, online: false, online_until: null })
         .eq('boss_name', raid.name)
         .eq('team_id', stratPost.team_id)
         .eq('position', position)
@@ -1540,7 +1623,10 @@ client.on('interactionCreate', async interaction => {
       team_id: stratPost.team_id,
       position,
       player_name: binding.game_id,
+      discord_username: discordUsername,
+      in_room: true,
       online: false,
+      online_until: null,
       last_seen: now,
       joined_at: now,
     }, { onConflict: 'boss_name,team_id,position,player_name' });
@@ -1674,7 +1760,7 @@ client.on('messageDelete', async message => {
         const playerNames = [...new Set(signups.map(s => s.game_id).filter(Boolean))];
         if (playerNames.length > 0) {
           await supabase.from('players')
-            .update({ in_room: false })
+            .update({ in_room: false, online: false, online_until: null })
             .eq('boss_name', raid.name)
             .eq('team_id', stratPost.team_id)
             .in('player_name', playerNames);

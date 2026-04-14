@@ -66,6 +66,14 @@ function isUnknownMessageError(error) {
   return error?.code === 10008 || /Unknown Message/i.test(error?.message || '');
 }
 
+const RAID_POST_EXPIRE_MS = 2 * 60 * 60 * 1000;
+const expiredStratPostIds = new Set();
+
+function isRaidPostExpired(createdAt) {
+  if (!createdAt) return false;
+  return Date.now() - new Date(createdAt).getTime() >= RAID_POST_EXPIRE_MS;
+}
+
 // ─── keyword cache ──────────────────────────────────────────────────────────
 let keywordsCache = [];
 let keywordsCacheTime = 0;
@@ -136,9 +144,11 @@ function getBossEmoji(raidName) {
   return BOSS_EMOJI[key] || '';
 }
 
-async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null) {
+async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
   const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
+  const postExpired = options.disableAllButtons || isRaidPostExpired(options.createdAt);
+  const closedLine = postExpired ? '\n\n-# ⏰ This raid post is closed after 2 hours.' : '';
 
   // fetch guide URL from teams table if teamId provided
   let guideUrl = null;
@@ -172,26 +182,27 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   }
   const linkLine = linkParts.length > 0 ? '\n' + linkParts.join(' · ') : '';
 
-  const description = hostLine + posLines + linkLine;
-
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines + linkLine)
+    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines + linkLine + closedLine)
     .setTimestamp();
 
   // row1: Join P1~P4 + Leave
   const row1 = new ActionRowBuilder().addComponents(
-    ...POSITIONS.map(pos =>
-      new ButtonBuilder()
+    ...POSITIONS.map(pos => {
+      const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+      return new ButtonBuilder()
         .setCustomId(`signup:${pos}`)
         .setLabel(`Join ${pos}`)
         .setStyle(ButtonStyle.Primary)
-    ),
+        .setDisabled(postExpired || posSignups.length > 0);
+    }),
     new ButtonBuilder()
       .setCustomId('signup:cancel')
       .setLabel('Clear')
       .setStyle(ButtonStyle.Danger)
+      .setDisabled(postExpired)
   );
 
   return { embeds: [embed], components: [row1] };
@@ -420,7 +431,6 @@ async function refreshStratBoards(teamId) {
   }
 }
 
-// update both the original strat post embed and the thread embed if it exists
 function isDiscordSnowflake(value) {
   return /^\d+$/.test(String(value || ''));
 }
@@ -428,7 +438,6 @@ function isDiscordSnowflake(value) {
 async function updateStratPostEmbeds(stratPost, msgPayload) {
   const tasks = [];
 
-  // update original message
   if (isDiscordSnowflake(stratPost.channel_id) && isDiscordSnowflake(stratPost.message_id)) {
     tasks.push((async () => {
       try {
@@ -441,7 +450,6 @@ async function updateStratPostEmbeds(stratPost, msgPayload) {
     })());
   }
 
-  // update thread message if exists
   if (
     stratPost.thread_message_id &&
     stratPost.thread_channel_id &&
@@ -485,7 +493,8 @@ async function refreshStratPostsForTeam(teamId) {
         signups,
         stratPost.creator_name || null,
         stratPost.id,
-        stratPost.team_id
+        stratPost.team_id,
+        { createdAt: stratPost.created_at }
       );
       await updateStratPostEmbeds(stratPost, payload);
     } catch (e) {
@@ -620,7 +629,6 @@ async function deleteWebsitePost(messageId) {
 // ─── slash command registration ─────────────────────────────────────────────
 async function registerCommands() {
   const commands = [
-    // /id — 綁定遊戲 ID
     new SlashCommandBuilder()
       .setName('id')
       .setDescription('Link or view your PokeMMO game ID')
@@ -630,7 +638,6 @@ async function registerCommands() {
           .setRequired(false)
       ),
 
-    // /raid — post a raid signup form
     new SlashCommandBuilder()
       .setName('raid')
       .setDescription('Host a raid')
@@ -647,7 +654,6 @@ async function registerCommands() {
           .setAutocomplete(true)
       ),
 
-    // /delete — delete your own raid post
     new SlashCommandBuilder()
       .setName('delete')
       .setDescription('Delete a raid post you created')
@@ -657,7 +663,6 @@ async function registerCommands() {
           .setRequired(true)
       ),
 
-    // /position — join a position on the website player list
     new SlashCommandBuilder()
       .setName('position')
       .setDescription('Join a position on the website player list')
@@ -685,7 +690,6 @@ async function registerCommands() {
           )
       ),
 
-    // /myposition — view and manage your current signups
     new SlashCommandBuilder()
       .setName('myposition')
       .setDescription('View and manage your current raid positions'),
@@ -698,7 +702,6 @@ async function registerCommands() {
       .setName('offline')
       .setDescription('Set all your joined positions to offline'),
 
-    // /strat — create a permanent strat board showing player counts
     new SlashCommandBuilder()
       .setName('strat')
       .setDescription('Create a permanent strat board with player count stats')
@@ -719,8 +722,6 @@ async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    // 全局 command 需要最多 1 小時才能生效
-    // 用 guild command 測試時改用 guildId
     await rest.put(
       Routes.applicationCommands(process.env.CLIENT_ID),
       { body: commands }
@@ -732,10 +733,41 @@ async function registerCommands() {
   }
 }
 
+async function expireRaidPostButtons() {
+  const twoHoursAgo = new Date(Date.now() - RAID_POST_EXPIRE_MS).toISOString();
+  const { data: expiredPosts } = await supabase
+    .from('strat_posts')
+    .select('id, created_at, channel_id, message_id, thread_channel_id, thread_message_id, raids(name), teams(name), creator_name, team_id')
+    .lt('created_at', twoHoursAgo);
+
+  if (!expiredPosts || expiredPosts.length === 0) return;
+
+  for (const stratPost of expiredPosts) {
+    if (expiredStratPostIds.has(stratPost.id)) continue;
+    try {
+      const signups = await getSignupsForPost(stratPost.id);
+      const payload = await buildStratMessage(
+        stratPost.raids?.name || 'Raid',
+        stratPost.teams?.name || 'Strat',
+        signups,
+        stratPost.creator_name || null,
+        stratPost.id,
+        stratPost.team_id,
+        { createdAt: stratPost.created_at, disableAllButtons: true }
+      );
+      await updateStratPostEmbeds(stratPost, payload);
+      expiredStratPostIds.add(stratPost.id);
+    } catch (e) {
+      console.error(`[Bot] expireRaidPostButtons error: strat_post_id=${stratPost.id}`, e.message);
+    }
+  }
+}
+
 // ─── event: ready ───────────────────────────────────────────────────────────
 client.once('ready', () => {
   console.log(`[Bot] Ready: ${client.user.tag}`);
   setInterval(expireOnline, 60 * 1000);
+  setInterval(expireRaidPostButtons, 60 * 1000);
 
   supabase
     .channel('players-realtime-sync')
@@ -788,14 +820,6 @@ client.on('threadCreate', async thread => {
     await thread.join();
     console.log(`[Bot] Joined thread: ${thread.name}`);
 
-    // check if thread was created from a strat_post message
-    // EasyThreads creates thread from the original message — starterMessageId points to it
-    const starterMessageId = thread.id; // for forum threads; for normal threads use thread.parentId
-    const parentMessageId = thread.appliedTags ? null : thread.id;
-
-    // try to find strat_post by the message that spawned this thread
-    // EasyThreads typically names the thread after the message content
-    // we check if any strat_post in this channel has been threaded
     const { data: posts } = await supabase
       .from('strat_posts')
       .select('*, raids(name), teams(name)')
@@ -804,7 +828,6 @@ client.on('threadCreate', async thread => {
 
     if (!posts || posts.length === 0) return;
 
-    // try to fetch the starter message of this thread
     let starterMsg = null;
     try {
       starterMsg = await thread.fetchStarterMessage();
@@ -812,19 +835,16 @@ client.on('threadCreate', async thread => {
 
     if (!starterMsg) return;
 
-    // check if this starter message matches a strat_post
     const matchedPost = posts.find(p => p.message_id === starterMsg.id);
     if (!matchedPost) return;
 
     const raidName = matchedPost.raids?.name || '';
     const teamName = matchedPost.teams?.name || '';
 
-    // build and send the same embed in the thread
     const signups = await getSignupsForPost(matchedPost.id);
-    const msgPayload = await buildStratMessage(raidName, teamName, signups, null, matchedPost.id, matchedPost.team_id);
+    const msgPayload = await buildStratMessage(raidName, teamName, signups, null, matchedPost.id, matchedPost.team_id, { createdAt: matchedPost.created_at });
     const threadMsg = await thread.send(msgPayload);
 
-    // save thread message info
     await supabase.from('strat_posts')
       .update({
         thread_message_id: threadMsg.id,
@@ -838,7 +858,6 @@ client.on('threadCreate', async thread => {
   }
 });
 
-// ─── event: autocomplete ────────────────────────────────────────────────────
 client.on('interactionCreate', async interaction => {
   if (!interaction.isAutocomplete()) return;
 
@@ -869,16 +888,13 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// ─── event: slash commands + buttons ────────────────────────────────────────
 client.on('interactionCreate', async interaction => {
-  // ── /id ───────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'id') {
     const gameId = interaction.options.getString('game_id');
     const discordId = interaction.user.id;
     const discordUsername = interaction.user.username;
 
     if (!gameId) {
-      // 查詢
       const { data } = await supabase
         .from('user_bindings')
         .select('game_id, updated_at')
@@ -899,7 +915,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // 綁定 / 更新
     const { error } = await supabase.from('user_bindings').upsert({
       discord_id: discordId,
       discord_username: discordUsername,
@@ -918,7 +933,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── /strat ────────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'raid') {
     const raidId = parseInt(interaction.options.getString('raid'));
     const teamId = parseInt(interaction.options.getString('strat'));
@@ -934,16 +948,14 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.deferReply();
 
-    // use game ID as creator name if linked, fallback to discord username
     const { data: creatorBinding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', interaction.user.id).single();
     const creatorName = creatorBinding?.game_id || interaction.user.username;
 
-    // insert strat_posts first to get the id for row3 buttons
     const { data: stratPost, error } = await supabase
       .from('strat_posts')
       .insert({
-        message_id: '0', // placeholder, updated after message sent
+        message_id: '0',
         channel_id: interaction.channelId,
         guild_id: interaction.guildId,
         raid_id: raidId,
@@ -960,10 +972,9 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id, teamId);
+    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id, teamId, { createdAt: stratPost.created_at });
     const msg = await interaction.followUp(msgPayload);
 
-    // update message_id now that we have it
     await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
     const synced = await syncRaidPostToWebsite({
       messageId: msg.id,
@@ -989,12 +1000,9 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── /delete ───────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'delete') {
     const messageId = interaction.options.getString('message_id');
-    const discordId = interaction.user.id;
 
-    // find the strat post and verify the requester created it
     const { data: stratPost } = await supabase
       .from('strat_posts')
       .select('*')
@@ -1006,8 +1014,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // only the original poster (matched by guild + channel) can delete
-    // we store created_by_discord_id if available, else allow anyone in same guild
     const channel = interaction.guild?.channels?.cache.get(stratPost.channel_id);
     try {
       const msg = await channel?.messages?.fetch(messageId);
@@ -1036,7 +1042,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // clean up DB
     await deleteWebsitePost(messageId);
     await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
     await supabase.from('strat_posts').delete().eq('id', stratPost.id);
@@ -1045,7 +1050,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── /position ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'position') {
     const raidId   = parseInt(interaction.options.getString('raid'));
     const teamId   = parseInt(interaction.options.getString('strat'));
@@ -1099,12 +1103,10 @@ client.on('interactionCreate', async interaction => {
       flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
-    // refresh any strat boards for this team
     refreshStratBoards(teamId).catch(e => console.error('[Bot] refresh error:', e.message));
     return;
   }
 
-  // ── /myposition ─────────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'myposition') {
     const discordId = interaction.user.id;
     const { data: binding } = await supabase
@@ -1147,7 +1149,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── /strat — create permanent strat board ────────────────────────────────
   if (interaction.isChatInputCommand() && interaction.commandName === 'strat') {
     const raidId = parseInt(interaction.options.getString('raid'));
     const teamId = parseInt(interaction.options.getString('strat'));
@@ -1182,7 +1183,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── buttons ───────────────────────────────────────────────────────────────
   if (!interaction.isButton()) return;
 
   const parts = interaction.customId.split(':');
@@ -1193,7 +1193,6 @@ client.on('interactionCreate', async interaction => {
   const discordId = interaction.user.id;
   const discordUsername = interaction.user.username;
 
-  // ── board:P1~P4 — join/leave via strat board (silent) ────────────────────
   if (action === 'board' && value !== 'leave') {
     const position = value;
     const teamId = parseInt(sidOverride);
@@ -1220,7 +1219,6 @@ client.on('interactionCreate', async interaction => {
     const raidName = board.raids?.name || '';
     const now = new Date().toISOString();
 
-    // toggle: already joined → remove, not joined → join
     await interaction.deferUpdate();
     const { data: existing } = await supabase
       .from('players')
@@ -1252,12 +1250,10 @@ client.on('interactionCreate', async interaction => {
       }
     }
 
-    // refresh embed — acknowledge silently via deferUpdate
     await refreshStratBoards(teamId);
     return;
   }
 
-  // ── board:leave — remove all positions in this strat ─────────────────────
   if (action === 'board' && value === 'leave') {
     const teamId = parseInt(sidOverride);
 
@@ -1288,9 +1284,8 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── boardonline:on/off — set online status ───────────────────────────────
   if (action === 'boardonline') {
-    const setOnline = value === 'on'; // 'on' or 'off'
+    const setOnline = value === 'on';
     const teamId = parseInt(sidOverride);
 
     const { data: binding } = await supabase
@@ -1327,7 +1322,6 @@ client.on('interactionCreate', async interaction => {
 
     const now = new Date().toISOString();
     await interaction.deferUpdate();
-    // if going online, set online_until = now + 30min
     const onlineUntil = setOnline ? new Date(Date.now() + 30 * 60 * 1000).toISOString() : null;
 
     for (const e of myEntries) {
@@ -1340,7 +1334,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── my* handlers — don't need stratPost ───────────────────────────────────
   if (action === 'myremove' || action === 'mytoggle' || action === 'mypage') {
     const { data: binding } = await supabase
       .from('user_bindings').select('game_id').eq('discord_id', discordId).single();
@@ -1349,9 +1342,8 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── mypage: prev/next ──────────────────────────────────────────────────
     if (action === 'mypage') {
-      const direction = value; // 'prev' or 'next'
+      const direction = value;
       const currentPage = parseInt(parts[2]) || 0;
       const newPage = direction === 'next' ? currentPage + 1 : currentPage - 1;
       const msg = await buildMyPositionMessage(binding.game_id, newPage);
@@ -1359,7 +1351,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // entryId is parts[1], page is parts[2]
     const entryId = value;
     const currentPage = parseInt(parts[2]) || 0;
 
@@ -1391,8 +1382,6 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // find strat post — prefer sidOverride (kick/delete from row2), else lookup by message id
-  // also check thread_message_id in case button is pressed from the thread copy
   let stratPost;
   let isFromThread = false;
 
@@ -1404,7 +1393,6 @@ client.on('interactionCreate', async interaction => {
       .single();
     stratPost = data;
   } else {
-    // try original message_id first
     const { data: byMsg } = await supabase
       .from('strat_posts')
       .select('*, raids(name, icon), teams(name), creator_name')
@@ -1414,7 +1402,6 @@ client.on('interactionCreate', async interaction => {
     if (byMsg) {
       stratPost = byMsg;
     } else {
-      // try thread_message_id
       const { data: byThread } = await supabase
         .from('strat_posts')
         .select('*, raids(name, icon), teams(name), creator_name')
@@ -1429,10 +1416,8 @@ client.on('interactionCreate', async interaction => {
 
   if (!stratPost) return;
 
-  // helper: update the interacted message, then sync the other copy
   const updateAndSync = async (payload) => {
     if (isFromThread) {
-      // pressed from thread copy — edit thread msg, then edit original
       await interaction.message.edit(payload);
       await interaction.deferUpdate().catch(() => {});
       try {
@@ -1441,7 +1426,6 @@ client.on('interactionCreate', async interaction => {
         await orig.edit(payload);
       } catch (e) {}
     } else {
-      // pressed from original — update via interaction, then edit thread copy
       await interaction.update(payload);
       if (stratPost.thread_message_id && stratPost.thread_channel_id) {
         try {
@@ -1457,8 +1441,15 @@ client.on('interactionCreate', async interaction => {
   const teamName = stratPost.teams?.name || 'Strat';
   const creatorId = stratPost.created_by_discord_id || null;
 
-  // ── signup actions — require game ID binding ──────────────────────────────
   if (action !== 'signup') return;
+
+  if (isRaidPostExpired(stratPost.created_at)) {
+    const signups = await getSignupsForPost(stratPost.id);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, stratPost.id, stratPost.team_id, { createdAt: stratPost.created_at, disableAllButtons: true });
+    await updateAndSync(updated);
+    await interaction.followUp({ content: '❌ This raid post is closed after 2 hours.', flags: 64 });
+    return;
+  }
 
   const { data: binding } = await supabase
     .from('user_bindings')
@@ -1474,12 +1465,10 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── signup:cancel — creator clears all, others remove only themselves ───────
   if (value === 'cancel') {
     const isCreator = creatorId && discordId === creatorId;
 
     if (isCreator) {
-      // creator: clear all signups for this post
       const { data: allSignups } = await supabase
         .from('discord_signups')
         .select('position, game_id')
@@ -1488,7 +1477,6 @@ client.on('interactionCreate', async interaction => {
       await supabase.from('discord_signups').delete()
         .eq('strat_post_id', stratPost.id);
 
-      // sync: remove all from players table
       if (allSignups?.length && stratPost.raid_id) {
         const { raidsCache } = await getRaidConfig();
         const raid = raidsCache.find(r => r.id === stratPost.raid_id);
@@ -1503,7 +1491,6 @@ client.on('interactionCreate', async interaction => {
         }
       }
     } else {
-      // regular player: remove only their own signups
       const { data: oldSignups } = await supabase
         .from('discord_signups')
         .select('position')
@@ -1530,7 +1517,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
     await updateAndSync(updated);
     if (!isCreator && creatorId) {
       await sendHostRaidNotification(
@@ -1547,7 +1534,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // ── signup:P1~P4 — toggle join/leave ─────────────────────────────────────
   const position = value;
 
   const { data: mySignup } = await supabase
@@ -1559,7 +1545,6 @@ client.on('interactionCreate', async interaction => {
     .maybeSingle();
 
   if (mySignup) {
-    // already joined — toggle off
     await supabase.from('discord_signups').delete().eq('id', mySignup.id);
     const { raidsCache } = await getRaidConfig();
     const raid = raidsCache.find(r => r.id === stratPost.raid_id);
@@ -1571,7 +1556,7 @@ client.on('interactionCreate', async interaction => {
         .eq('player_name', binding.game_id);
     }
     const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
     await updateAndSync(updated);
     if (creatorId && creatorId !== discordId) {
       await sendHostRaidNotification(
@@ -1584,22 +1569,20 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // check if position is full
-  const { data: teamRow } = await supabase
-    .from('teams').select('max_per_pos').eq('id', stratPost.team_id).single();
-  const maxPerPos = teamRow?.max_per_pos || 4;
-  const { count } = await supabase
+  const { data: existingOccupant, count: occupantCount } = await supabase
     .from('discord_signups')
-    .select('id', { count: 'exact', head: true })
+    .select('id', { count: 'exact' })
     .eq('strat_post_id', stratPost.id)
     .eq('position', position);
 
-  if (count >= maxPerPos) {
-    await interaction.reply({ content: `❌ **${position}** is full (${maxPerPos}/${maxPerPos}).`, flags: 64 });
+  if ((occupantCount || 0) > 0) {
+    const signups = await getSignupsForPost(stratPost.id);
+    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
+    await updateAndSync(updated);
+    await interaction.reply({ content: `❌ **${position}** is already taken.`, flags: 64 });
     return;
   }
 
-  // join
   const { error: insertError } = await supabase.from('discord_signups').insert({
     strat_post_id: stratPost.id,
     discord_id: discordId,
@@ -1613,7 +1596,6 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // sync to players table
   const { raidsCache: rc } = await getRaidConfig();
   const raidForSync = rc.find(r => r.id === stratPost.raid_id);
   if (raidForSync) {
@@ -1633,11 +1615,10 @@ client.on('interactionCreate', async interaction => {
   }
 
   const signups = await getSignupsForPost(stratPost.id);
-  const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id);
+  const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
   await updateAndSync(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
 
-  // refresh strat boards for this team
   refreshStratBoards(stratPost.team_id).catch(e => console.error('[Bot] refresh error:', e.message));
 
   if (creatorId && creatorId !== discordId) {
@@ -1648,94 +1629,7 @@ client.on('interactionCreate', async interaction => {
     );
     return;
   }
-
-  // DM the host when someone joins
-  if (creatorId && creatorId !== discordId) {
-    const jumpUrl = `https://discord.com/channels/${stratPost.guild_id}/${stratPost.channel_id}/${stratPost.message_id}`;
-    try {
-      const creator = await interaction.client.users.fetch(creatorId);
-      await creator.send(`🔔 **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid post!\n⚔️ ${raidName} — ${teamName}\n${jumpUrl}`);
-    } catch (e) {}
-  }
 });
-
-// legacy text LFG parser disabled; website sync now comes from /raid only
-if (false) {
-client.on('messageCreate', async message => {
-  if (message.author.bot) return;
-
-  const serverId = message.guildId;
-  const config = SERVER_CONFIGS[serverId];
-  if (!config) return;
-
-  if (config.type === 'single' && !config.channelIds.includes(message.channelId)) return;
-
-  const content = message.content;
-  const lower = content.toLowerCase();
-  const hasLFG = /\b(lfg|lf\+?|looking for)\b/i.test(lower);
-  if (!hasLFG) return;
-
-  const displayName = message.author.username;
-
-  let bossName = null;
-  let strat_name = null;
-
-  const kwMatch = await (async () => {
-    const keywords = await getKeywords();
-    for (const kw of keywords) {
-      if (lower.includes(kw.keyword.toLowerCase())) {
-        return { bossName: kw.boss_name, stratName: kw.team_id };
-      }
-    }
-    return null;
-  })();
-
-  if (kwMatch) {
-    bossName = kwMatch.bossName;
-    strat_name = kwMatch.stratName;
-  } else {
-    bossName = bossByText(content);
-  }
-
-  if (!bossName) return;
-
-  const positions = parsePositions(content);
-  const ign = parseIGN(content, displayName);
-
-  const serverName = message.guild?.name || serverId;
-  const channelName = message.channel?.name || message.channelId;
-  const jumpUrl = `https://discord.com/channels/${serverId}/${message.channelId}/${message.id}`;
-
-  await supabase.from('lfg_posts').upsert({
-    discord_msg_id: message.id,
-    discord_server_id: serverId,
-    discord_channel_id: message.channelId,
-    discord_username: displayName,
-    ign,
-    boss_name: bossName,
-    strat_name,
-    positions,
-    raw_message: content,
-    posted_at: new Date(message.createdTimestamp).toISOString(),
-    is_stale: false,
-    discord_jump_url: jumpUrl,
-    server_name: serverName,
-    channel_name: channelName,
-  }, { onConflict: 'discord_msg_id' });
-
-  console.log(`[LFG] ${displayName} | ${bossName} | pos: ${positions.join(',')} | ign: ${ign}`);
-});
-
-// ─── stale 清理 ─────────────────────────────────────────────────────────────
-async function markStale() {
-  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-  await supabase
-    .from('lfg_posts')
-    .update({ is_stale: true })
-    .eq('is_stale', false)
-    .lt('posted_at', twoHoursAgo);
-}
-}
 
 client.on('messageDelete', async message => {
   try {
@@ -1776,7 +1670,6 @@ client.on('messageDelete', async message => {
   }
 });
 
-// expire online status after 30 min
 async function expireOnline() {
   const now = new Date().toISOString();
   const { data: expired } = await supabase
@@ -1788,12 +1681,10 @@ async function expireOnline() {
 
   if (!expired || expired.length === 0) return;
 
-  // set offline
   await supabase.from('players')
     .update({ online: false, online_until: null })
     .in('id', expired.map(e => e.id));
 
-  // refresh strat boards for affected teams
   const teamIds = [...new Set(expired.map(e => e.team_id))];
   for (const tid of teamIds) {
     refreshStratBoards(tid).catch(() => {});
@@ -1801,8 +1692,6 @@ async function expireOnline() {
   console.log(`[Bot] Expired online for ${expired.length} player(s)`);
 }
 
-// ─── start ───────────────────────────────────────────────────────────────────
-// register commands first, then login — avoids race condition in ready event
 registerCommands().then(() => {
   client.login(process.env.DISCORD_TOKEN);
 });

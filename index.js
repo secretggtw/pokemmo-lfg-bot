@@ -149,17 +149,14 @@ function getBossEmoji(raidName) {
 }
 
 function buildQuickRaidMessage(raidName, teamName, creatorName = null) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**
-` : '';
+  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
-  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('
-');
+  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('\n');
 
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}
-` + hostLine + posLines)
+    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines)
     .setTimestamp();
 
   const row1 = new ActionRowBuilder().addComponents(
@@ -173,70 +170,6 @@ function buildQuickRaidMessage(raidName, teamName, creatorName = null) {
       .setCustomId('signup:cancel')
       .setLabel('Clear')
       .setStyle(ButtonStyle.Danger)
-  );
-
-  return { embeds: [embed], components: [row1] };
-}
-
-async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
-  const bossEmoji = getBossEmoji(raidName);
-  const postExpired = options.disableAllButtons || isRaidPostExpired(options.createdAt);
-  const closedLine = postExpired ? '\n\n-# ⏰ This raid post is closed after 2 hours.' : '';
-
-  // fetch guide URL from teams table if teamId provided
-  let guideUrl = null;
-  if (teamId) {
-    const { data: teamData } = await supabase
-      .from('teams').select('guide_url').eq('id', teamId).single();
-    guideUrl = teamData?.guide_url || null;
-  }
-
-  const posLines = POSITIONS.map(pos => {
-    const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
-    if (posSignups.length > 0) {
-      return posSignups.map(s => `**${pos}** | ${s.game_id} ✅  \`/invite ${s.game_id}\``).join('\n');
-    }
-    return `**${pos}** | Open`;
-  }).join('\n');
-
-  const baseUrl = 'https://pokemmo-raid-team-finder.vercel.app';
-  const playerListUrl = teamId
-    ? `${baseUrl}/?boss=${encodeURIComponent(raidName)}&team=${teamId}`
-    : baseUrl;
-  const pokemonUrl = teamId
-    ? `${baseUrl}/?strat=${teamId}&tab=All`
-    : baseUrl;
-
-  const linkParts = [];
-  if (guideUrl) linkParts.push(`[Guide](${guideUrl})`);
-  if (teamId) {
-    linkParts.push(`[Pokemon](${pokemonUrl})`);
-    linkParts.push(`[Player List](${playerListUrl})`);
-  }
-  const linkLine = linkParts.length > 0 ? '\n' + linkParts.join(' · ') : '';
-
-  const embed = new EmbedBuilder()
-    .setTitle(`${bossEmoji} ${raidName}`)
-    .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines + linkLine + closedLine)
-    .setTimestamp();
-
-  // row1: Join P1~P4 + Leave
-  const row1 = new ActionRowBuilder().addComponents(
-    ...POSITIONS.map(pos => {
-      const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
-      return new ButtonBuilder()
-        .setCustomId(`signup:${pos}`)
-        .setLabel(`Join ${pos}`)
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(postExpired || posSignups.length > 0);
-    }),
-    new ButtonBuilder()
-      .setCustomId('signup:cancel')
-      .setLabel('Clear')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(postExpired)
   );
 
   return { embeds: [embed], components: [row1] };

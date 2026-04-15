@@ -149,14 +149,36 @@ function getBossEmoji(raidName) {
 }
 
 function buildQuickRaidMessage(raidName, teamName, creatorName = null) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
+  const hostLine = creatorName ? `👑 Host: **${creatorName}**
+` : '';
   const bossEmoji = getBossEmoji(raidName);
-  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('\n');
+  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('
+');
 
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines)(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
+    .setDescription(`### ⚔️ ${teamName}
+` + hostLine + posLines)
+    .setTimestamp();
+
+  const row1 = new ActionRowBuilder().addComponents(
+    ...POSITIONS.map(pos =>
+      new ButtonBuilder()
+        .setCustomId(`signup:${pos}`)
+        .setLabel(`Join ${pos}`)
+        .setStyle(ButtonStyle.Primary)
+    ),
+    new ButtonBuilder()
+      .setCustomId('signup:cancel')
+      .setLabel('Clear')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  return { embeds: [embed], components: [row1] };
+}
+
+async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
   const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
   const postExpired = options.disableAllButtons || isRaidPostExpired(options.createdAt);

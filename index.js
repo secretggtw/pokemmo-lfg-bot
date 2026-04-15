@@ -788,12 +788,12 @@ client.on('threadCreate', async thread => {
     console.log(`[Bot] Joined thread: ${thread.name}`);
 
     let starterMsg = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
       try {
         starterMsg = await thread.fetchStarterMessage();
         if (starterMsg) break;
       } catch (e) {}
-      await sleep(800);
+      await sleep(1000);
     }
 
     if (!starterMsg) {
@@ -802,11 +802,10 @@ client.on('threadCreate', async thread => {
     }
 
     let matchedPost = null;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
       const { data } = await supabase
         .from('strat_posts')
         .select('*, raids(name), teams(name)')
-        .eq('channel_id', thread.parentId)
         .eq('message_id', starterMsg.id)
         .maybeSingle();
 
@@ -815,7 +814,7 @@ client.on('threadCreate', async thread => {
         break;
       }
 
-      await sleep(800);
+      await sleep(1000);
     }
 
     if (!matchedPost) {
@@ -824,25 +823,28 @@ client.on('threadCreate', async thread => {
     }
 
     if (matchedPost.thread_message_id) {
+      console.log(`[Bot] threadCreate: thread copy already exists for strat_post ${matchedPost.id}`);
       return;
     }
 
     const raidName = matchedPost.raids?.name || '';
     const teamName = matchedPost.teams?.name || '';
-
     const signups = await getSignupsForPost(matchedPost.id);
+
     const msgPayload = await buildStratMessage(
       raidName,
       teamName,
       signups,
-      null,
+      matchedPost.creator_name || null,
       matchedPost.id,
       matchedPost.team_id,
       { createdAt: matchedPost.created_at }
     );
+
     const threadMsg = await thread.send(msgPayload);
 
-    await supabase.from('strat_posts')
+    await supabase
+      .from('strat_posts')
       .update({
         thread_message_id: threadMsg.id,
         thread_channel_id: thread.id,

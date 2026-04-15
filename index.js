@@ -144,6 +144,33 @@ function getBossEmoji(raidName) {
   return BOSS_EMOJI[key] || '';
 }
 
+function buildQuickRaidMessage(raidName, teamName, creatorName = null) {
+  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
+  const bossEmoji = getBossEmoji(raidName);
+  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${bossEmoji} ${raidName}`)
+    .setColor(0x5865f2)
+    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines)
+    .setTimestamp();
+
+  const row1 = new ActionRowBuilder().addComponents(
+    ...POSITIONS.map(pos =>
+      new ButtonBuilder()
+        .setCustomId(`signup:${pos}`)
+        .setLabel(`Join ${pos}`)
+        .setStyle(ButtonStyle.Primary)
+    ),
+    new ButtonBuilder()
+      .setCustomId('signup:cancel')
+      .setLabel('Clear')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  return { embeds: [embed], components: [row1] };
+}
+
 async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
   const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
@@ -208,7 +235,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   return { embeds: [embed], components: [row1] };
 }
 
-// 從 DB 讀取當前 strat_post 的報名狀態（每個 position 可多人）
+// 從 DB 讀取當前 /raid post 的報名狀態（每個 position 最多一人；資料以 array 形式回傳供 embed 組裝）
 async function getSignupsForPost(stratPostId) {
   const { data } = await supabase
     .from('discord_signups')
@@ -968,12 +995,14 @@ client.on('interactionCreate', async interaction => {
 
     if (error || !stratPost) {
       console.error('[Bot] strat_posts insert error:', error?.message);
-      await interaction.followUp({ content: '❌ Failed to create post.', flags: 64 });
+      await interaction.editReply({ content: '❌ Failed to create post.' });
       return;
     }
 
-    const msgPayload = await buildStratMessage(raid.name, team.name, {}, creatorName, stratPost.id, teamId, { createdAt: stratPost.created_at });
-    const msg = await interaction.followUp(msgPayload);
+    // Quick post first so EasyThreads can catch it sooner
+    const quickPayload = buildQuickRaidMessage(raid.name, team.name, creatorName);
+    await interaction.editReply(quickPayload);
+    const msg = await interaction.fetchReply();
 
     await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
     const synced = await syncRaidPostToWebsite({
@@ -996,6 +1025,19 @@ client.on('interactionCreate', async interaction => {
       await interaction.followUp({ content: '❌ Failed to sync the raid post to the website. Please try again.', flags: 64 });
       return;
     }
+
+    // Replace quick version with full version after sync
+    const fullPayload = await buildStratMessage(
+      raid.name,
+      team.name,
+      {},
+      creatorName,
+      stratPost.id,
+      teamId,
+      { createdAt: stratPost.created_at }
+    );
+    await msg.edit(fullPayload);
+
     console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
     return;
   }

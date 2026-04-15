@@ -74,6 +74,10 @@ function isRaidPostExpired(createdAt) {
   return Date.now() - new Date(createdAt).getTime() >= RAID_POST_EXPIRE_MS;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ─── keyword cache ──────────────────────────────────────────────────────────
 let keywordsCache = [];
 let keywordsCacheTime = 0;
@@ -145,14 +149,17 @@ function getBossEmoji(raidName) {
 }
 
 function buildQuickRaidMessage(raidName, teamName, creatorName = null) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
+  const hostLine = creatorName ? `👑 Host: **${creatorName}**
+` : '';
   const bossEmoji = getBossEmoji(raidName);
-  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('\n');
+  const posLines = POSITIONS.map(pos => `**${pos}** | Open`).join('
+');
 
   const embed = new EmbedBuilder()
     .setTitle(`${bossEmoji} ${raidName}`)
     .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines)
+    .setDescription(`### ⚔️ ${teamName}
+` + hostLine + posLines)
     .setTimestamp();
 
   const row1 = new ActionRowBuilder().addComponents(
@@ -847,29 +854,59 @@ client.on('threadCreate', async thread => {
     await thread.join();
     console.log(`[Bot] Joined thread: ${thread.name}`);
 
-    const { data: posts } = await supabase
-      .from('strat_posts')
-      .select('*, raids(name), teams(name)')
-      .eq('channel_id', thread.parentId)
-      .is('thread_message_id', null);
-
-    if (!posts || posts.length === 0) return;
-
     let starterMsg = null;
-    try {
-      starterMsg = await thread.fetchStarterMessage();
-    } catch (e) {}
+    for (let i = 0; i < 5; i++) {
+      try {
+        starterMsg = await thread.fetchStarterMessage();
+        if (starterMsg) break;
+      } catch (e) {}
+      await sleep(800);
+    }
 
-    if (!starterMsg) return;
+    if (!starterMsg) {
+      console.warn(`[Bot] threadCreate: starter message not found for thread ${thread.id}`);
+      return;
+    }
 
-    const matchedPost = posts.find(p => p.message_id === starterMsg.id);
-    if (!matchedPost) return;
+    let matchedPost = null;
+    for (let i = 0; i < 5; i++) {
+      const { data } = await supabase
+        .from('strat_posts')
+        .select('*, raids(name), teams(name)')
+        .eq('channel_id', thread.parentId)
+        .eq('message_id', starterMsg.id)
+        .maybeSingle();
+
+      if (data) {
+        matchedPost = data;
+        break;
+      }
+
+      await sleep(800);
+    }
+
+    if (!matchedPost) {
+      console.warn(`[Bot] threadCreate: no strat_post matched starter message ${starterMsg.id}`);
+      return;
+    }
+
+    if (matchedPost.thread_message_id) {
+      return;
+    }
 
     const raidName = matchedPost.raids?.name || '';
     const teamName = matchedPost.teams?.name || '';
 
     const signups = await getSignupsForPost(matchedPost.id);
-    const msgPayload = await buildStratMessage(raidName, teamName, signups, null, matchedPost.id, matchedPost.team_id, { createdAt: matchedPost.created_at });
+    const msgPayload = await buildStratMessage(
+      raidName,
+      teamName,
+      signups,
+      null,
+      matchedPost.id,
+      matchedPost.team_id,
+      { createdAt: matchedPost.created_at }
+    );
     const threadMsg = await thread.send(msgPayload);
 
     await supabase.from('strat_posts')
@@ -1611,21 +1648,7 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  const { data: existingOccupant, count: occupantCount } = await supabase
-    .from('discord_signups')
-    .select('id', { count: 'exact' })
-    .eq('strat_post_id', stratPost.id)
-    .eq('position', position);
-
-  if ((occupantCount || 0) > 0) {
-    const signups = await getSignupsForPost(stratPost.id);
-    const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
-    await updateAndSync(updated);
-    await interaction.reply({ content: `❌ **${position}** is already taken.`, flags: 64 });
-    return;
-  }
-
-  const { error: insertError } = await supabase.from('discord_signups').insert({
+    const { error: insertError } = await supabase.from('discord_signups').insert({
     strat_post_id: stratPost.id,
     discord_id: discordId,
     discord_username: discordUsername,
@@ -1634,6 +1657,23 @@ client.on('interactionCreate', async interaction => {
   });
 
   if (insertError) {
+    if (insertError.code === '23505') {
+      const signups = await getSignupsForPost(stratPost.id);
+      const updated = await buildStratMessage(
+        raidName,
+        teamName,
+        signups,
+        stratPost.creator_name || null,
+        null,
+        stratPost.team_id,
+        { createdAt: stratPost.created_at }
+      );
+      await updateAndSync(updated);
+      await interaction.reply({ content: `❌ **${position}** is already taken.`, flags: 64 });
+      return;
+    }
+
+    console.error('[Bot] signup insert error:', insertError.message, insertError.code);
     await interaction.reply({ content: '❌ Signup failed. Please try again.', flags: 64 });
     return;
   }

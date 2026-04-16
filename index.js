@@ -32,36 +32,6 @@ const supabase = createClient(
 // ─── constants ─────────────────────────────────────────────────────────────
 const POSITIONS = ['P1', 'P2', 'P3', 'P4'];
 
-const POSITION_EMOJI = {
-  P1: '🎮',
-  P2: '🎮',
-  P3: '🎮',
-  P4: '🎮',
-};
-
-// position label colors in embed (using unicode bold)
-const POSITION_LABEL = {
-  P1: '🔵 P1',
-  P2: '🟢 P2',
-  P3: '🟡 P3',
-  P4: '🔴 P4',
-};
-
-// LFG 訊息監聽用（保留原有功能）
-const BOSS_ALIASES = {
-  heatran: 'Heatran', cresselia: 'Cresselia', meloetta: 'Meloetta',
-  cobalion: 'Cobalion', terrakion: 'Terrakion', virizion: 'Virizion',
-  octi: 'Heatran', octilleri: 'Heatran', octillery: 'Heatran',
-};
-
-const SERVER_CONFIGS = {
-  [process.env.SERVER_A_ID]: { type: 'split' },
-  [process.env.SERVER_B_ID]: {
-    type: 'single',
-    channelIds: (process.env.SERVER_B_CHANNEL_IDS || '').split(',').filter(Boolean),
-  },
-};
-
 function isUnknownMessageError(error) {
   return error?.code === 10008 || /Unknown Message/i.test(error?.message || '');
 }

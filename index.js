@@ -193,11 +193,12 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const row1 = new ActionRowBuilder().addComponents(
     ...POSITIONS.map(pos => {
       const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+      const firstSignup = posSignups[0] || null;
       return new ButtonBuilder()
-        .setCustomId(`signup:${pos}`)
-        .setLabel(`Join ${pos}`)
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(postExpired || posSignups.length > 0);
+        .setCustomId(firstSignup ? `invite:${pos}` : `signup:${pos}`)
+        .setLabel(`${firstSignup ? 'Invite' : 'Join'} ${pos}`)
+        .setStyle(firstSignup ? ButtonStyle.Secondary : ButtonStyle.Primary)
+        .setDisabled(postExpired);
     }),
     new ButtonBuilder()
       .setCustomId('signup:cancel')
@@ -1515,6 +1516,18 @@ client.on('interactionCreate', async interaction => {
   const raidName = stratPost.raids?.name || 'Raid';
   const teamName = stratPost.teams?.name || 'Strat';
   const creatorId = stratPost.created_by_discord_id || null;
+
+  if (action === 'invite') {
+    const signups = await getSignupsForPost(stratPost.id);
+    const posSignups = Array.isArray(signups[value]) ? signups[value] : (signups[value] ? [signups[value]] : []);
+    const target = posSignups[0];
+    if (!target?.game_id) {
+      await interaction.reply({ content: `❌ No player found in ${value}.`, flags: 64 });
+      return;
+    }
+    await interaction.reply({ content: `\`/invite ${target.game_id}\``, flags: 64 });
+    return;
+  }
 
   if (action !== 'signup') return;
 

@@ -85,6 +85,18 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const postExpired = options.disableAllButtons || isRaidPostExpired(options.createdAt);
   const closedLine = postExpired ? '\n\n-# ⏰ This raid post is closed after 2 hours.' : '';
 
+  const filledCount = POSITIONS.reduce((count, pos) => {
+    const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+    return count + (posSignups.length > 0 ? 1 : 0);
+  }, 0);
+
+  const openPositions = POSITIONS.filter(pos => {
+    const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
+    return posSignups.length === 0;
+  });
+
+  const lookingForLine = `⏳ ${openPositions.length > 0 ? `Looking for ${openPositions.join(', ')}` : 'FULL'}\n`;
+
   // fetch guide URL from teams table if teamId provided
   let guideUrl = null;
   if (teamId) {
@@ -118,10 +130,10 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const linkLine = linkParts.length > 0 ? '\n' + linkParts.join(' · ') : '';
 
   const embed = new EmbedBuilder()
-    .setTitle(`${bossEmoji} ${raidName}`)
+    .setTitle(`${bossEmoji} ${raidName} (${filledCount}/4)`)
     .setColor(0x5865f2)
-    .setDescription(`### ⚔️ ${teamName}\n` + hostLine + posLines + linkLine + closedLine)
-    .setTimestamp();
+    .setDescription(`### ⚔️ ${teamName}\n` + lookingForLine + hostLine + posLines + linkLine + closedLine)
+    .setTimestamp(options.createdAt ? new Date(options.createdAt) : new Date());
 
   // row1: Join P1~P4 + Leave
   const row1 = new ActionRowBuilder().addComponents(

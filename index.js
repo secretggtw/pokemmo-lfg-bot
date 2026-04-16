@@ -162,7 +162,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const posLines = POSITIONS.map(pos => {
     const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
     if (posSignups.length > 0) {
-      return posSignups.map(s => `**${pos}** | ${s.game_id} \`/invite ${s.game_id}\``).join('\n');
+      return posSignups.map(s => `**${pos}** | ${s.game_id}✅️ \`\`\`/invite ${s.game_id}\`\`\``).join('\n');
     }
     return `**${pos}** | Open`;
   }).join('\n');

@@ -76,17 +76,6 @@ function isRaidPostExpired(createdAt) {
 }
 
 // ─── keyword cache ──────────────────────────────────────────────────────────
-let keywordsCache = [];
-let keywordsCacheTime = 0;
-
-async function getKeywords() {
-  if (Date.now() - keywordsCacheTime < 5 * 60 * 1000) return keywordsCache;
-  const { data } = await supabase.from('lfg_keywords').select('*');
-  keywordsCache = data || [];
-  keywordsCacheTime = Date.now();
-  return keywordsCache;
-}
-
 // ─── raid / team cache ──────────────────────────────────────────────────────
 let raidsCache = [];
 let teamsCache = [];
@@ -104,31 +93,6 @@ async function getRaidConfig() {
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
-function bossByText(text) {
-  const lower = text.toLowerCase();
-  for (const [alias, boss] of Object.entries(BOSS_ALIASES)) {
-    if (lower.includes(alias)) return boss;
-  }
-  return null;
-}
-
-function parsePositions(content) {
-  const lower = content.toLowerCase();
-  if (/every\s*pos|all\s*pos|any\s*pos/i.test(lower)) return ['P1', 'P2', 'P3', 'P4'];
-  const positions = [];
-  for (const m of lower.matchAll(/p\s*([1-4])/g)) {
-    const p = `P${m[1]}`;
-    if (!positions.includes(p)) positions.push(p);
-  }
-  return positions;
-}
-
-function parseIGN(content, displayName) {
-  const ignMatch = content.match(/ign\s*:?\s*(\S+)/i);
-  if (ignMatch) return ignMatch[1];
-  return displayName;
-}
-
 // ─── build strat embed + buttons ───────────────────────────────────────────
 // boss emoji map (server custom emojis)
 const BOSS_EMOJI = {
@@ -210,7 +174,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   return { embeds: [embed], components: [row1] };
 }
 
-// 從 DB 讀取當前 strat_post 的報名狀態（每個 position 可多人）
+// Load the current raid-room signups for a raid post, keyed by position.
 async function getSignupsForPost(stratPostId) {
   const { data } = await supabase
     .from('discord_signups')
@@ -1685,7 +1649,7 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  const { data: existingOccupant, count: occupantCount } = await supabase
+  const { count: occupantCount } = await supabase
     .from('discord_signups')
     .select('id', { count: 'exact' })
     .eq('strat_post_id', stratPost.id)

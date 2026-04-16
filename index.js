@@ -68,6 +68,7 @@ function isUnknownMessageError(error) {
 
 const RAID_POST_EXPIRE_MS = 2 * 60 * 60 * 1000;
 const expiredStratPostIds = new Set();
+const suppressedThreadStarterMessageIds = new Set();
 
 function isRaidPostExpired(createdAt) {
   if (!createdAt) return false;
@@ -244,6 +245,73 @@ async function setAllPlayerEntriesOnlineState(gameId, setOnline) {
 
   if (error) throw error;
   return [...new Set((data || []).map(row => row.team_id).filter(Boolean))];
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchStarterMessageWithRetry(thread, attempts = 8, delayMs = 750) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const starterMsg = await thread.fetchStarterMessage();
+      if (starterMsg) return starterMsg;
+    } catch (e) {}
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return null;
+}
+
+async function findStratPostForStarterMessage(parentChannelId, starterMessageId, attempts = 10, delayMs = 1000) {
+  for (let i = 0; i < attempts; i++) {
+    const { data: matchedPost } = await supabase
+      .from('strat_posts')
+      .select('*, raids(name), teams(name)')
+      .eq('channel_id', parentChannelId)
+      .eq('message_id', starterMessageId)
+      .maybeSingle();
+
+    if (matchedPost) return matchedPost;
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return null;
+}
+
+async function createAndSyncThreadForPost(message, stratPost, raidName, teamName) {
+  suppressedThreadStarterMessageIds.add(message.id);
+  try {
+    const thread = await message.startThread({
+      name: `${raidName} ${teamName}`.slice(0, 100),
+      autoArchiveDuration: 60,
+    });
+
+    try {
+      await thread.join();
+    } catch (e) {}
+
+    const signups = await getSignupsForPost(stratPost.id);
+    const msgPayload = await buildStratMessage(
+      raidName,
+      teamName,
+      signups,
+      null,
+      stratPost.id,
+      stratPost.team_id,
+      { createdAt: stratPost.created_at }
+    );
+    const threadMsg = await thread.send(msgPayload);
+
+    await supabase.from('strat_posts')
+      .update({
+        thread_message_id: threadMsg.id,
+        thread_channel_id: thread.id,
+      })
+      .eq('id', stratPost.id);
+
+    console.log(`[Bot] Synced strat post to thread: strat_post_id=${stratPost.id} thread_id=${thread.id}`);
+  } finally {
+    setTimeout(() => suppressedThreadStarterMessageIds.delete(message.id), 30000);
+  }
 }
 
 // ─── build /myposition ephemeral message ────────────────────────────────────
@@ -820,23 +888,25 @@ client.on('threadCreate', async thread => {
     await thread.join();
     console.log(`[Bot] Joined thread: ${thread.name}`);
 
-    const { data: posts } = await supabase
-      .from('strat_posts')
-      .select('*, raids(name), teams(name)')
-      .eq('channel_id', thread.parentId)
-      .is('thread_message_id', null);
+    const starterMsg = await fetchStarterMessageWithRetry(thread);
+    if (!starterMsg) {
+      console.error(`[Bot] threadCreate skipped: starter message unavailable for thread ${thread.id}`);
+      return;
+    }
 
-    if (!posts || posts.length === 0) return;
+    if (suppressedThreadStarterMessageIds.has(starterMsg.id)) {
+      return;
+    }
 
-    let starterMsg = null;
-    try {
-      starterMsg = await thread.fetchStarterMessage();
-    } catch (e) {}
+    const matchedPost = await findStratPostForStarterMessage(thread.parentId, starterMsg.id);
+    if (!matchedPost) {
+      console.error(`[Bot] threadCreate skipped: no strat post matched starter message ${starterMsg.id}`);
+      return;
+    }
 
-    if (!starterMsg) return;
-
-    const matchedPost = posts.find(p => p.message_id === starterMsg.id);
-    if (!matchedPost) return;
+    if (matchedPost.thread_message_id && matchedPost.thread_channel_id) {
+      return;
+    }
 
     const raidName = matchedPost.raids?.name || '';
     const teamName = matchedPost.teams?.name || '';
@@ -852,7 +922,7 @@ client.on('threadCreate', async thread => {
       })
       .eq('id', matchedPost.id);
 
-    console.log(`[Bot] Synced strat post to thread: ${thread.name}`);
+    console.log(`[Bot] Synced strat post to thread: strat_post_id=${matchedPost.id} thread_id=${thread.id}`);
   } catch (e) {
     console.error('[Bot] threadCreate error:', e.message);
   }
@@ -976,6 +1046,11 @@ client.on('interactionCreate', async interaction => {
     const msg = await interaction.followUp(msgPayload);
 
     await supabase.from('strat_posts').update({ message_id: msg.id }).eq('id', stratPost.id);
+    try {
+      await createAndSyncThreadForPost(msg, stratPost, raid.name, team.name);
+    } catch (threadError) {
+      console.error(`[Bot] /raid thread sync error: strat_post_id=${stratPost.id}`, threadError.message);
+    }
     const synced = await syncRaidPostToWebsite({
       messageId: msg.id,
       channelId: interaction.channelId,

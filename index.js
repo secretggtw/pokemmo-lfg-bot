@@ -162,7 +162,7 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const posLines = POSITIONS.map(pos => {
     const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
     if (posSignups.length > 0) {
-      return posSignups.map(s => `**${pos}** | ${s.game_id} ✅  \`/invite ${s.game_id}\``).join('\n');
+      return posSignups.map(s => `**${pos}** | ${s.game_id} ?` + "\n```1\n" + `/invite ${s.game_id}` + "\n```" ).join('\n');
     }
     return `**${pos}** | Open`;
   }).join('\n');
@@ -1525,7 +1525,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: `❌ No player found in ${value}.`, flags: 64 });
       return;
     }
-    await interaction.reply({ content: `\`/invite ${target.game_id}\``, flags: 64 });
+    await interaction.reply({ content: "```1\n" + `/invite ${target.game_id}` + "\n```", flags: 64 });
     return;
   }
 

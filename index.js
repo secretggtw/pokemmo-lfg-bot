@@ -17,9 +17,6 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessageReactions,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -718,15 +715,6 @@ async function registerCommands() {
       ),
 
     new SlashCommandBuilder()
-      .setName('delete')
-      .setDescription('Delete a raid post you created')
-      .addStringOption(opt =>
-        opt.setName('message_id')
-          .setDescription('Message ID of the raid post (right-click → Copy Message ID)')
-          .setRequired(true)
-      ),
-
-    new SlashCommandBuilder()
       .setName('position')
       .setDescription('Join a position on the website player list')
       .addStringOption(opt =>
@@ -1047,56 +1035,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
-    return;
-  }
-
-  if (interaction.isChatInputCommand() && interaction.commandName === 'delete') {
-    const messageId = interaction.options.getString('message_id');
-
-    const { data: stratPost } = await supabase
-      .from('strat_posts')
-      .select('*')
-      .eq('message_id', messageId)
-      .single();
-
-    if (!stratPost) {
-      await interaction.reply({ content: '❌ Raid post not found.', flags: 64 });
-      return;
-    }
-
-    const channel = interaction.guild?.channels?.cache.get(stratPost.channel_id);
-    try {
-      const msg = await channel?.messages?.fetch(messageId);
-      if (msg) await msg.delete();
-    } catch (e) {
-      console.error('[Bot] Failed to delete message:', e.message);
-    }
-
-    const { data: signups } = await supabase
-      .from('discord_signups')
-      .select('position, game_id')
-      .eq('strat_post_id', stratPost.id);
-
-    if (signups?.length) {
-      const { raidsCache } = await getRaidConfig();
-      const raid = raidsCache.find(r => r.id === stratPost.raid_id);
-      if (raid) {
-        for (const signup of signups) {
-          await supabase.from('players')
-            .update({ in_room: false, online: false, online_until: null })
-            .eq('boss_name', raid.name)
-            .eq('team_id', stratPost.team_id)
-            .eq('position', signup.position)
-            .eq('player_name', signup.game_id);
-        }
-      }
-    }
-
-    await deleteWebsitePost(messageId);
-    await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
-    await supabase.from('strat_posts').delete().eq('id', stratPost.id);
-
-    await interaction.reply({ content: '✅ Raid post deleted.', flags: 64 });
     return;
   }
 

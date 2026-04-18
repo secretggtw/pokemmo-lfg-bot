@@ -79,6 +79,15 @@ function isValidGameId(gameId) {
   return typeof gameId === 'string' && GAME_ID_PATTERN.test(gameId);
 }
 
+function safeDiscordText(value) {
+  if (value == null) return '';
+  return String(value)
+    .replace(/@everyone/gi, '@\u200beveryone')
+    .replace(/@here/gi, '@\u200bhere')
+    .replace(/<@/g, '<@\u200b')
+    .replace(/([*_`~|>])/g, '\\$1');
+}
+
 // ─── keyword cache ──────────────────────────────────────────────────────────
 // ─── raid / team cache ──────────────────────────────────────────────────────
 let raidsCache = [];
@@ -114,7 +123,8 @@ function getBossEmoji(raidName) {
 }
 
 async function buildStratMessage(raidName, teamName, signups = {}, creatorName = null, stratPostId = null, teamId = null, options = {}) {
-  const hostLine = creatorName ? `👑 Host: **${creatorName}**\n` : '';
+  const safeCreatorName = creatorName ? safeDiscordText(creatorName) : null;
+  const hostLine = safeCreatorName ? `👑 Host: **${safeCreatorName}**\n` : '';
   const bossEmoji = getBossEmoji(raidName);
   const postExpired = options.disableAllButtons || isRaidPostExpired(options.createdAt);
   const closedLine = postExpired ? '\n\n-# ⏰ This raid post is closed after 2 hours.' : '';
@@ -142,7 +152,12 @@ async function buildStratMessage(raidName, teamName, signups = {}, creatorName =
   const posLines = POSITIONS.map(pos => {
     const posSignups = Array.isArray(signups[pos]) ? signups[pos] : (signups[pos] ? [signups[pos]] : []);
     if (posSignups.length > 0) {
-      return posSignups.map(s => `**${pos}** | ${s.game_id}✅️ \`\`\`/invite ${s.game_id}\`\`\``).join('\n');
+      return posSignups
+        .map(s => {
+          const safeGameId = safeDiscordText(s.game_id);
+          return `**${pos}** | ${safeGameId}✅️ \`\`\`/invite ${safeGameId}\`\`\``;
+        })
+        .join('\n');
     }
     return `**${pos}** | Open`;
   }).join('\n');
@@ -657,11 +672,13 @@ async function notifyHostOfWebsiteRoomEvent(eventRow) {
   console.log(`[Bot] notifyHostOfWebsiteRoomEvent matched strat_post_id=${eventRow.strat_post_id} action=${eventRow.action}`);
 
   const actionText = eventRow.action === 'leave' ? 'left' : 'joined';
+  const safePlayerName = safeDiscordText(eventRow.player_name);
+  const safePosition = safeDiscordText(eventRow.position || 'a slot');
 
   try {
     await sendHostRaidNotification(
       stratPost,
-      `🔔 **${eventRow.player_name}** ${actionText} **${eventRow.position || 'a slot'}** from the website.\n⚔️ ${stratPost.raids?.name || eventRow.boss_name || 'Raid'} — ${stratPost.teams?.name || 'Strat'}`,
+      `🔔 **${safePlayerName}** ${actionText} **${safePosition}** from the website.\n⚔️ ${stratPost.raids?.name || eventRow.boss_name || 'Raid'} — ${stratPost.teams?.name || 'Strat'}`,
       eventRow.player_name
     );
   } catch (e) {
@@ -1158,8 +1175,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     const playerListUrl = `https://pokemmo-raid-team-finder.vercel.app/?boss=${encodeURIComponent(raid.name)}&team=${teamId}`;
+    const safeBoundGameId = safeDiscordText(binding.game_id);
     await interaction.reply({
-      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${binding.game_id}\n[Player List](${playerListUrl})`,
+      content: `✅ Joined **${position}** for **${raid.name} — ${team.name}**!\nGame ID: ${safeBoundGameId}\n[Player List](${playerListUrl})`,
       flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
@@ -1610,7 +1628,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: `❌ No player found in ${value}.`, flags: 64 });
       return;
     }
-    await interaction.reply({ content: `\`/invite ${target.game_id}\``, flags: 64 });
+    await interaction.reply({ content: `\`/invite ${safeDiscordText(target.game_id)}\``, flags: 64 });
     return;
   }
 
@@ -1693,9 +1711,11 @@ client.on('interactionCreate', async interaction => {
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
     await updateAndSync(updated);
     if (!isCreator && creatorId) {
+      const safeDiscordName = safeDiscordText(discordUsername);
+      const safeGameId = safeDiscordText(binding.game_id);
       await sendHostRaidNotification(
         stratPost,
-        `🔔 **${discordUsername}** (${binding.game_id}) left your raid post.\n⚔️ ${raidName} — ${teamName}`,
+        `🔔 **${safeDiscordName}** (${safeGameId}) left your raid post.\n⚔️ ${raidName} — ${teamName}`,
         binding.game_id
       );
     }
@@ -1750,9 +1770,11 @@ client.on('interactionCreate', async interaction => {
     const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
     await updateAndSync(updated);
     if (creatorId && creatorId !== discordId) {
+      const safeDiscordName = safeDiscordText(discordUsername);
+      const safeGameId = safeDiscordText(binding.game_id);
       await sendHostRaidNotification(
         stratPost,
-        `🔔 **${discordUsername}** (${binding.game_id}) left **${position}** in your raid post.\n⚔️ ${raidName} — ${teamName}`,
+        `🔔 **${safeDiscordName}** (${safeGameId}) left **${position}** in your raid post.\n⚔️ ${raidName} — ${teamName}`,
         binding.game_id
       );
     }
@@ -1826,7 +1848,7 @@ client.on('interactionCreate', async interaction => {
   const signups = await getSignupsForPost(stratPost.id);
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
   await updateAndSync(updated);
-  await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
+  await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${safeDiscordText(binding.game_id)}`, flags: 64 });
   await logAudit({
     eventType: 'raid_join',
     actorType: 'discord_user',
@@ -1849,9 +1871,11 @@ client.on('interactionCreate', async interaction => {
   refreshStratBoards(stratPost.team_id).catch(e => console.error('[Bot] refresh error:', e.message));
 
   if (creatorId && creatorId !== discordId) {
+    const safeDiscordName = safeDiscordText(discordUsername);
+    const safeGameId = safeDiscordText(binding.game_id);
     await sendHostRaidNotification(
       stratPost,
-      `🔔 **${discordUsername}** (${binding.game_id}) joined **${position}** in your raid post!\n⚔️ ${raidName} — ${teamName}`,
+      `🔔 **${safeDiscordName}** (${safeGameId}) joined **${position}** in your raid post!\n⚔️ ${raidName} — ${teamName}`,
       binding.game_id
     );
     return;

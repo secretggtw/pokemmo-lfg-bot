@@ -26,6 +26,38 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+async function logAudit({
+  source = 'bot',
+  eventType,
+  actorType = 'system',
+  actorId = null,
+  actorName = null,
+  targetType = null,
+  targetId = null,
+  guildId = null,
+  channelId = null,
+  messageId = null,
+  metadata = null,
+}) {
+  if (!eventType) return;
+  const { error } = await supabase.from('audit_logs').insert({
+    source,
+    event_type: eventType,
+    actor_type: actorType,
+    actor_id: actorId ? String(actorId) : null,
+    actor_name: actorName ? String(actorName) : null,
+    target_type: targetType,
+    target_id: targetId ? String(targetId) : null,
+    guild_id: guildId ? String(guildId) : null,
+    channel_id: channelId ? String(channelId) : null,
+    message_id: messageId ? String(messageId) : null,
+    metadata: metadata || {},
+  });
+  if (error) {
+    console.error('[Bot] audit log error:', error.message);
+  }
+}
+
 // ─── constants ─────────────────────────────────────────────────────────────
 const POSITIONS = ['P1', 'P2', 'P3', 'P4'];
 
@@ -958,6 +990,17 @@ client.on('interactionCreate', async interaction => {
     if (error) {
       await interaction.reply({ content: '❌ Failed to link game ID. Please try again.', flags: 64 });
     } else {
+      await logAudit({
+        eventType: 'id_link',
+        actorType: 'discord_user',
+        actorId: discordId,
+        actorName: discordUsername,
+        targetType: 'user_binding',
+        targetId: gameId,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        metadata: { game_id: gameId },
+      });
       await interaction.reply({
         content: `✅ Linked! Game ID: **${gameId}**\nYou can now click buttons on raid posts to sign up.`,
         flags: 64,
@@ -1035,6 +1078,24 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     console.log(`[Bot] Strat post created: ${stratPost.id} | ${raid.name} ${team.name}`);
+    await logAudit({
+      eventType: 'raid_create',
+      actorType: 'discord_user',
+      actorId: interaction.user.id,
+      actorName: interaction.user.username,
+      targetType: 'strat_post',
+      targetId: stratPost.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: msg.id,
+      metadata: {
+        raid_id: raidId,
+        raid_name: raid.name,
+        team_id: teamId,
+        team_name: team.name,
+        creator_name: creatorName,
+      },
+    });
     return;
   }
 
@@ -1091,6 +1152,24 @@ client.on('interactionCreate', async interaction => {
       flags: 64,
     });
     console.log(`[/position] ${binding.game_id} → ${raid.name} ${team.name} ${position}`);
+    await logAudit({
+      eventType: 'position_add',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: discordUsername,
+      targetType: 'player_position',
+      targetId: `${raid.name}:${teamId}:${position}:${binding.game_id}`,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      metadata: {
+        raid_id: raidId,
+        raid_name: raid.name,
+        team_id: teamId,
+        team_name: team.name,
+        position,
+        game_id: binding.game_id,
+      },
+    });
     refreshStratBoards(teamId).catch(e => console.error('[Bot] refresh error:', e.message));
     return;
   }
@@ -1134,6 +1213,20 @@ client.on('interactionCreate', async interaction => {
         : '✅ All your joined positions are now offline.',
       flags: 64,
     });
+    await logAudit({
+      eventType: setOnline ? 'online_on' : 'online_off',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: interaction.user.username,
+      targetType: 'player_entries',
+      targetId: binding.game_id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      metadata: {
+        game_id: binding.game_id,
+        team_ids: teamIds,
+      },
+    });
     return;
   }
 
@@ -1167,6 +1260,23 @@ client.on('interactionCreate', async interaction => {
       console.error('[Bot] strat_boards insert error:', error.message);
     } else {
       console.log(`[Bot] Strat board created: ${raid.name} ${team.name}`);
+      await logAudit({
+        eventType: 'strat_board_create',
+        actorType: 'discord_user',
+        actorId: interaction.user.id,
+        actorName: interaction.user.username,
+        targetType: 'strat_board',
+        targetId: msg.id,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: msg.id,
+        metadata: {
+          raid_id: raidId,
+          raid_name: raid.name,
+          team_id: teamId,
+          team_name: team.name,
+        },
+      });
     }
     return;
   }
@@ -1219,6 +1329,18 @@ client.on('interactionCreate', async interaction => {
 
     if (existing) {
       await supabase.from('players').delete().eq('id', existing.id);
+      await logAudit({
+        eventType: 'board_position_remove',
+        actorType: 'discord_user',
+        actorId: discordId,
+        actorName: discordUsername,
+        targetType: 'player_position',
+        targetId: `${raidName}:${teamId}:${position}:${binding.game_id}`,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: interaction.message.id,
+        metadata: { raid_name: raidName, team_id: teamId, position, game_id: binding.game_id },
+      });
     } else {
       const { error } = await supabase.from('players').upsert({
         boss_name: raidName,
@@ -1236,6 +1358,18 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: '❌ Failed. Please try again.', flags: 64 });
         return;
       }
+      await logAudit({
+        eventType: 'board_position_add',
+        actorType: 'discord_user',
+        actorId: discordId,
+        actorName: discordUsername,
+        targetType: 'player_position',
+        targetId: `${raidName}:${teamId}:${position}:${binding.game_id}`,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: interaction.message.id,
+        metadata: { raid_name: raidName, team_id: teamId, position, game_id: binding.game_id },
+      });
     }
 
     await refreshStratBoards(teamId);
@@ -1267,6 +1401,18 @@ client.on('interactionCreate', async interaction => {
       .eq('boss_name', board.raids?.name || '')
       .eq('team_id', teamId)
       .eq('player_name', binding.game_id);
+    await logAudit({
+      eventType: 'board_clear',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: discordUsername,
+      targetType: 'player_entries',
+      targetId: `${board.raids?.name || ''}:${teamId}:${binding.game_id}`,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: interaction.message.id,
+      metadata: { raid_name: board.raids?.name || '', team_id: teamId, game_id: binding.game_id },
+    });
 
     await refreshStratBoards(teamId);
     return;
@@ -1317,6 +1463,18 @@ client.on('interactionCreate', async interaction => {
         .update({ online: setOnline, last_seen: now, online_until: onlineUntil })
         .eq('id', e.id);
     }
+    await logAudit({
+      eventType: setOnline ? 'board_online_on' : 'board_online_off',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: discordUsername,
+      targetType: 'player_entries',
+      targetId: `${raidName}:${teamId}:${binding.game_id}`,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: interaction.message.id,
+      metadata: { raid_name: raidName, team_id: teamId, game_id: binding.game_id, entry_count: myEntries.length },
+    });
 
     await refreshStratBoards(teamId);
     return;
@@ -1526,6 +1684,24 @@ client.on('interactionCreate', async interaction => {
         binding.game_id
       );
     }
+    await logAudit({
+      eventType: isCreator ? 'raid_clear' : 'raid_leave',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: discordUsername,
+      targetType: 'strat_post',
+      targetId: stratPost.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: stratPost.message_id,
+      metadata: {
+        raid_name: raidName,
+        team_name: teamName,
+        team_id: stratPost.team_id,
+        game_id: binding.game_id,
+        creator_clear: isCreator,
+      },
+    });
     if (isCreator) {
       await interaction.followUp({ content: '✅ All signups cleared.', flags: 64 });
     } else {
@@ -1565,6 +1741,24 @@ client.on('interactionCreate', async interaction => {
         binding.game_id
       );
     }
+    await logAudit({
+      eventType: 'raid_leave',
+      actorType: 'discord_user',
+      actorId: discordId,
+      actorName: discordUsername,
+      targetType: 'strat_post',
+      targetId: stratPost.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: stratPost.message_id,
+      metadata: {
+        raid_name: raidName,
+        team_name: teamName,
+        team_id: stratPost.team_id,
+        position,
+        game_id: binding.game_id,
+      },
+    });
     await interaction.followUp({ content: `✅ Removed from **${position}**.`, flags: 64 });
     return;
   }
@@ -1618,6 +1812,24 @@ client.on('interactionCreate', async interaction => {
   const updated = await buildStratMessage(raidName, teamName, signups, stratPost.creator_name || null, null, stratPost.team_id, { createdAt: stratPost.created_at });
   await updateAndSync(updated);
   await interaction.followUp({ content: `✅ Joined **${position}**! Game ID: ${binding.game_id}`, flags: 64 });
+  await logAudit({
+    eventType: 'raid_join',
+    actorType: 'discord_user',
+    actorId: discordId,
+    actorName: discordUsername,
+    targetType: 'strat_post',
+    targetId: stratPost.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: stratPost.message_id,
+    metadata: {
+      raid_name: raidName,
+      team_name: teamName,
+      team_id: stratPost.team_id,
+      position,
+      game_id: binding.game_id,
+    },
+  });
 
   refreshStratBoards(stratPost.team_id).catch(e => console.error('[Bot] refresh error:', e.message));
 
@@ -1664,6 +1876,20 @@ client.on('messageDelete', async message => {
       await supabase.from('discord_signups').delete().eq('strat_post_id', stratPost.id);
       await supabase.from('strat_posts').delete().eq('id', stratPost.id);
       console.log(`[Bot] Synced deleted raid post: ${message.id}`);
+      await logAudit({
+        eventType: 'raid_post_deleted',
+        actorType: 'system',
+        targetType: 'strat_post',
+        targetId: stratPost.id,
+        guildId: message.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        metadata: {
+          raid_id: stratPost.raid_id,
+          team_id: stratPost.team_id,
+          signup_count: signups?.length || 0,
+        },
+      });
     }
   } catch (e) {
     console.error('[Bot] messageDelete sync error:', e.message);

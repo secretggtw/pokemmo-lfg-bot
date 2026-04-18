@@ -1559,6 +1559,7 @@ client.on('interactionCreate', async interaction => {
 
   let stratPost;
   let isFromThread = false;
+  const interactionIsInThread = interaction.channel?.isThread?.() || false;
 
   if (sidOverride) {
     const { data } = await supabase
@@ -1576,6 +1577,9 @@ client.on('interactionCreate', async interaction => {
 
     if (byMsg) {
       stratPost = byMsg;
+      if (interactionIsInThread) {
+        isFromThread = true;
+      }
     } else {
       const { data: byThread } = await supabase
         .from('strat_posts')

@@ -68,10 +68,15 @@ function isUnknownMessageError(error) {
 const RAID_POST_EXPIRE_MS = 2 * 60 * 60 * 1000;
 const expiredStratPostIds = new Set();
 const threadSyncLocks = new Map();
+const GAME_ID_PATTERN = /^[A-Za-z0-9._ -]{2,20}$/;
 
 function isRaidPostExpired(createdAt) {
   if (!createdAt) return false;
   return Date.now() - new Date(createdAt).getTime() >= RAID_POST_EXPIRE_MS;
+}
+
+function isValidGameId(gameId) {
+  return typeof gameId === 'string' && GAME_ID_PATTERN.test(gameId);
 }
 
 // ─── keyword cache ──────────────────────────────────────────────────────────
@@ -975,6 +980,14 @@ client.on('interactionCreate', async interaction => {
           flags: 64,
         });
       }
+      return;
+    }
+
+    if (!isValidGameId(gameId)) {
+      await interaction.reply({
+        content: '❌ Invalid game ID. Use 2-20 characters: letters, numbers, spaces, `.`, `_`, or `-`.',
+        flags: 64,
+      });
       return;
     }
 

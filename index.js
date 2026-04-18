@@ -1561,22 +1561,26 @@ client.on('interactionCreate', async interaction => {
   if (!stratPost) return;
 
   const updateAndSync = async (payload) => {
+    await interaction.update(payload);
+
     if (isFromThread) {
-      await interaction.message.edit(payload);
-      await interaction.deferUpdate().catch(() => {});
       try {
         const ch = await client.channels.fetch(stratPost.channel_id);
         const orig = await ch.messages.fetch(stratPost.message_id);
         await orig.edit(payload);
-      } catch (e) {}
-    } else {
-      await interaction.update(payload);
-      if (stratPost.thread_message_id && stratPost.thread_channel_id) {
-        try {
-          const threadCh = await client.channels.fetch(stratPost.thread_channel_id);
-          const threadMsg = await threadCh.messages.fetch(stratPost.thread_message_id);
-          await threadMsg.edit(payload);
-        } catch (e) {}
+      } catch (e) {
+        console.error(`[Bot] updateAndSync original edit error: strat_post_id=${stratPost.id} message_id=${stratPost.message_id}`, e.message);
+      }
+      return;
+    }
+
+    if (stratPost.thread_message_id && stratPost.thread_channel_id) {
+      try {
+        const threadCh = await client.channels.fetch(stratPost.thread_channel_id);
+        const threadMsg = await threadCh.messages.fetch(stratPost.thread_message_id);
+        await threadMsg.edit(payload);
+      } catch (e) {
+        console.error(`[Bot] updateAndSync thread edit error: strat_post_id=${stratPost.id} thread_message_id=${stratPost.thread_message_id}`, e.message);
       }
     }
   };
